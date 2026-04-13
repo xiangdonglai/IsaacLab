@@ -30,7 +30,7 @@ from newton import Axis, CollisionPipeline, Contacts, Control, Model, ModelBuild
 from newton._src.usd.schemas import SchemaResolverNewton, SchemaResolverPhysx
 from newton.sensors import SensorContact as NewtonContactSensor
 from newton.sensors import SensorFrameTransform
-from newton.solvers import SolverBase, SolverFeatherstone, SolverMuJoCo, SolverNotifyFlags, SolverXPBD
+from newton.solvers import SolverBase, SolverFeatherstone, SolverMuJoCo, SolverNotifyFlags, SolverVBD, SolverXPBD
 
 from isaaclab.physics import PhysicsEvent, PhysicsManager
 from isaaclab.sim.utils.stage import get_current_stage
@@ -100,6 +100,7 @@ class NewtonManager(PhysicsManager):
     _needs_collision_pipeline: bool = False
     _collision_pipeline = None
     _collision_cfg: NewtonCollisionPipelineCfg | None = None
+    _soft_contact_margin: float = 0.01
     _newton_contact_sensors: dict = {}  # Maps sensor_key to NewtonContactSensor
     _newton_frame_transform_sensors: list = []  # List of SensorFrameTransform
     _report_contacts: bool = False
@@ -139,6 +140,10 @@ class NewtonManager(PhysicsManager):
     _LocalSite = tuple[None, list[list[int]]]
     _SiteEntry = _GlobalSite | _LocalSite
     _cl_site_index_map: dict[str, _SiteEntry] = {}
+
+    # Deformable body registry — DeformableObject instances register here before clone_environments.
+    # newton_physics_replicate consumes this inside begin_world/end_world for proper world assignment.
+    _deformable_registry: list = []
 
     @classmethod
     def initialize(cls, sim_context: SimulationContext) -> None:
@@ -389,6 +394,7 @@ class NewtonManager(PhysicsManager):
         cls._needs_collision_pipeline = False
         cls._collision_pipeline = None
         cls._collision_cfg = None
+        cls._soft_contact_margin = 0.01
         cls._newton_contact_sensors = {}
         cls._newton_frame_transform_sensors = []
         cls._report_contacts = False
@@ -403,6 +409,7 @@ class NewtonManager(PhysicsManager):
         cls._cl_pending_sites = {}
         cls._cl_site_index_map = {}
         cls._views = []
+        cls._deformable_registry = []
 
     @classmethod
     def set_builder(cls, builder: ModelBuilder) -> None:
@@ -603,6 +610,20 @@ class NewtonManager(PhysicsManager):
             cls._model.set_gravity(cls._gravity_vector)
             cls._model.num_envs = cls._num_envs
 
+            # Apply global model parameters from NewtonModelCfg
+            cfg = PhysicsManager._cfg
+            if cfg is not None and hasattr(cfg, "model_cfg") and cfg.model_cfg is not None:
+                model_cfg = cfg.model_cfg
+                cls._model.soft_contact_ke = float(model_cfg.soft_contact_ke)
+                cls._model.soft_contact_kd = float(model_cfg.soft_contact_kd)
+                cls._model.soft_contact_mu = float(model_cfg.soft_contact_mu)
+                if model_cfg.shape_material_ke is not None:
+                    cls._model.shape_material_ke.fill_(float(model_cfg.shape_material_ke))
+                if model_cfg.shape_material_kd is not None:
+                    cls._model.shape_material_kd.fill_(float(model_cfg.shape_material_kd))
+                if model_cfg.shape_material_mu is not None:
+                    cls._model.shape_material_mu.fill_(float(model_cfg.shape_material_mu))
+
         cls._state_0 = cls._model.state()
         cls._state_1 = cls._model.state()
         cls._control = cls._model.control()
@@ -616,23 +637,29 @@ class NewtonManager(PhysicsManager):
             import usdrt
 
             body_paths = getattr(cls._model, "body_label", None) or getattr(cls._model, "body_key", None)
-            if body_paths is None:
-                raise RuntimeError("NewtonManager: model has no body_label/body_key, skipping USD/Fabric sync for RTX.")
-            cls._usdrt_stage = get_current_stage(fabric=True)
-            for i, prim_path in enumerate(body_paths):
-                prim = cls._usdrt_stage.GetPrimAtPath(prim_path)
-                prim.CreateAttribute(cls._newton_index_attr, usdrt.Sdf.ValueTypeNames.UInt, True)
-                prim.GetAttribute(cls._newton_index_attr).Set(i)
-                # Tag with PhysicsRigidBodyAPI so cubric's eRigidBody mode
-                # applies Inverse propagation (preserves Newton's world
-                # transforms and derives local) instead of Forward.
-                prim.AddAppliedSchema("PhysicsRigidBodyAPI")
-                xformable_prim = usdrt.Rt.Xformable(prim)
-                if not xformable_prim.HasWorldXform():
-                    xformable_prim.SetWorldXformFromUsd()
+            if not body_paths:
+                logger.warning(
+                    "NewtonManager: model has no rigid bodies (body_label/body_key is empty). "
+                    "USD/Fabric body sync for RTX is skipped. "
+                    "Particle-only scenes (e.g. cloth) must register their own USD mesh update."
+                )
+                cls._usdrt_stage = None
+            else:
+                cls._usdrt_stage = get_current_stage(fabric=True)
+                for i, prim_path in enumerate(body_paths):
+                    prim = cls._usdrt_stage.GetPrimAtPath(prim_path)
+                    prim.CreateAttribute(cls._newton_index_attr, usdrt.Sdf.ValueTypeNames.UInt, True)
+                    prim.GetAttribute(cls._newton_index_attr).Set(i)
+                    # Tag with PhysicsRigidBodyAPI so cubric's eRigidBody mode
+                    # applies Inverse propagation (preserves Newton's world
+                    # transforms and derives local) instead of Forward.
+                    prim.AddAppliedSchema("PhysicsRigidBodyAPI")
+                    xformable_prim = usdrt.Rt.Xformable(prim)
+                    if not xformable_prim.HasWorldXform():
+                        xformable_prim.SetWorldXformFromUsd()
 
-            cls._mark_transforms_dirty()
-            cls.sync_transforms_to_usd()
+                cls._mark_transforms_dirty()
+                cls.sync_transforms_to_usd()
 
     @classmethod
     def instantiate_builder_from_stage(cls):
@@ -732,10 +759,16 @@ class NewtonManager(PhysicsManager):
                 if cls._collision_cfg is not None:
                     cls._collision_pipeline = CollisionPipeline(cls._model, **cls._collision_cfg.to_pipeline_args())
                 else:
-                    cls._collision_pipeline = CollisionPipeline(cls._model, broad_phase="explicit")
-
+                    logger.info(f"Creating CollisionPipeline (soft_contact_margin={cls._soft_contact_margin})")
+                    cls._collision_pipeline = CollisionPipeline(
+                        cls._model,
+                        soft_contact_margin=cls._soft_contact_margin,
+                    )
+                logger.info("CollisionPipeline created")
             if cls._contacts is None:
+                logger.info("VBD/XPBD: Creating contacts buffer")
                 cls._contacts = cls._collision_pipeline.contacts()
+                logger.info("VBD/XPBD: contacts buffer created")
 
         elif cls._solver is not None and isinstance(cls._solver, SolverMuJoCo):
             # MuJoCo contacts mode: create properly sized Contacts object
@@ -790,6 +823,34 @@ class NewtonManager(PhysicsManager):
             elif cls._solver_type == "featherstone":
                 cls._use_single_state = False
                 cls._solver = SolverFeatherstone(cls._model, **cfg_dict)
+            elif cls._solver_type == "vbd":
+                cls._use_single_state = False
+                solver_sig = inspect.signature(SolverVBD.__init__)
+                valid_solver_args = set(solver_sig.parameters.keys()) - {"self", "model"}
+                cfg_dict = {k: v for k, v in cfg_dict.items() if k in valid_solver_args}
+                logger.info(f"VBD: Creating SolverVBD with args: {cfg_dict}")
+                logger.info(f"VBD: model particle_count={getattr(cls._model, 'particle_count', 'N/A')}")
+                logger.info(
+                    f"VBD: model particle_color_groups has {len(getattr(cls._model, 'particle_color_groups', []))} groups"
+                )
+                cls._solver = SolverVBD(cls._model, **cfg_dict)
+                logger.info("VBD: SolverVBD created successfully")
+            elif cls._solver_type == "coupled":
+                from .coupled_solver import CoupledSolver
+
+                cls._use_single_state = False
+                cls._soft_contact_margin = solver_cfg.soft_contact_margin
+
+                # Initialize collision pipeline to pass into the coupled solver
+                cls._needs_collision_pipeline = True
+                cls._initialize_contacts()
+
+                cls._solver = CoupledSolver(
+                    model=cls._model,
+                    cfg=solver_cfg,
+                    collision_pipeline=cls._collision_pipeline,
+                    contacts=cls._contacts,
+                )
             else:
                 raise ValueError(f"Invalid solver type: {cls._solver_type}")
 
@@ -807,6 +868,8 @@ class NewtonManager(PhysicsManager):
                         "NewtonManager: collision_cfg cannot be set when use_mujoco_contacts=True."
                         " Either set use_mujoco_contacts=False or remove collision_cfg."
                     )
+            elif cls._solver_type == "coupled":
+                cls._needs_collision_pipeline = False
             else:
                 cls._needs_collision_pipeline = True
 
@@ -981,6 +1044,10 @@ class NewtonManager(PhysicsManager):
         The caller (``step()``) is responsible for calling ``sync_transforms_to_usd()``
         eagerly after ``wp.capture_launch``.
         """
+        # Rebuild BVH once per step for solvers that require it (e.g., VBD cloth).
+        if hasattr(cls._solver, "rebuild_bvh"):
+            cls._solver.rebuild_bvh(cls._state_0)
+
         if cls._needs_collision_pipeline:
             cls._collision_pipeline.collide(cls._state_0, cls._contacts)
             contacts = cls._contacts

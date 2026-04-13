@@ -4,22 +4,28 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 __all__ = [
+    "CoupledSolverCfg",
     "FeatherstoneSolverCfg",
     "HydroelasticSDFCfg",
     "MJWarpSolverCfg",
     "NewtonCfg",
     "NewtonCollisionPipelineCfg",
     "NewtonManager",
+    "NewtonModelCfg",
     "NewtonSolverCfg",
+    "VBDSolverCfg",
     "XPBDSolverCfg",
 ]
 
 from .newton_collision_cfg import HydroelasticSDFCfg, NewtonCollisionPipelineCfg
 from .newton_manager import NewtonManager
 from .newton_manager_cfg import (
+    CoupledSolverCfg,
     FeatherstoneSolverCfg,
     MJWarpSolverCfg,
     NewtonCfg,
+    NewtonModelCfg,
     NewtonSolverCfg,
+    VBDSolverCfg,
     XPBDSolverCfg,
 )
