@@ -111,6 +111,9 @@ def run_simulator(sim: sim_utils.SimulationContext, entities: dict[str, Deformab
             sim_time = 0.0
             count = 0
 
+            # reset buffers
+            cube_object.reset()
+
             # reset the nodal state of the object
             nodal_state = wp.to_torch(cube_object.data.default_nodal_state_w).clone()
             # apply random pose to the object
@@ -125,9 +128,6 @@ def run_simulator(sim: sim_utils.SimulationContext, entities: dict[str, Deformab
             nodal_kinematic_target[..., :3] = nodal_state[..., :3]
             nodal_kinematic_target[..., 3] = 1.0
             cube_object.write_nodal_kinematic_target_to_sim_index(nodal_kinematic_target)
-
-            # reset buffers
-            cube_object.reset()
 
             print("----------------------------------------")
             print("[INFO]: Resetting object state...")
