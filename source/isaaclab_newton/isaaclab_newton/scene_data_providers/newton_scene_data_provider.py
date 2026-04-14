@@ -114,6 +114,7 @@ class NewtonSceneDataProvider(BaseSceneDataProvider):
             from isaaclab_newton.physics import NewtonManager
 
             NewtonManager.sync_transforms_to_usd()
+            NewtonManager.sync_particles_to_usd()
         except Exception:
             pass
 

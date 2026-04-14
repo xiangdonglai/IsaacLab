@@ -148,3 +148,44 @@ def set_kinematic_flags_to_one(
     i = wp.tid()
     v = data[i]
     data[i] = wp.vec4f(v[0], v[1], v[2], 1.0)
+
+
+@wp.kernel
+def enforce_kinematic_targets(
+    targets: wp.array2d(dtype=wp.vec4f),
+    offsets: wp.array(dtype=wp.int32),
+    default_inv_mass: wp.array(dtype=wp.float32),
+    particle_q: wp.array(dtype=wp.vec3f),
+    particle_qd: wp.array(dtype=wp.vec3f),
+    particle_inv_mass: wp.array(dtype=wp.float32),
+    particle_flags: wp.array(dtype=wp.int32),
+):
+    """Enforce kinematic targets on Newton particles.
+
+    For each particle, reads the kinematic target flag (w-component):
+    - flag == 0.0 (kinematic): set inv_mass to 0, particle_flags to 0, write target position, zero velocity.
+    - flag != 0.0 (free): restore the default inv_mass and set particle_flags to 1 (ACTIVE).
+
+    Args:
+        targets: Per-instance kinematic targets. Shape is (num_instances, particles_per_body).
+            Each vec4f contains (target_x, target_y, target_z, flag).
+        offsets: Per-instance start offset into the flat particle array.
+        default_inv_mass: Saved default inverse masses. Shape is (total_particles,).
+        particle_q: Flat particle positions to write. Shape is (total_particles,).
+        particle_qd: Flat particle velocities to write. Shape is (total_particles,).
+        particle_inv_mass: Flat particle inverse masses to write. Shape is (total_particles,).
+        particle_flags: Flat particle flags to write. Shape is (total_particles,).
+            0 = kinematic (solver skips integration), 1 = ACTIVE.
+    """
+    i, j = wp.tid()
+    t = targets[i, j]
+    flat_idx = offsets[i] + j
+    flag = t[3]
+    if flag == 0.0:
+        particle_inv_mass[flat_idx] = 0.0
+        particle_flags[flat_idx] = 0
+        particle_q[flat_idx] = wp.vec3f(t[0], t[1], t[2])
+        particle_qd[flat_idx] = wp.vec3f(0.0, 0.0, 0.0)
+    else:
+        particle_inv_mass[flat_idx] = default_inv_mass[flat_idx]
+        particle_flags[flat_idx] = 1

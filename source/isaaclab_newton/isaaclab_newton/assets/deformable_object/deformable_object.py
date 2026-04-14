@@ -58,6 +58,7 @@ class DeformableRegistryEntry:
 from .deformable_object_data import DeformableObjectData
 from .kernels import (
     compute_nodal_state_w,
+    enforce_kinematic_targets,
     scatter_default_pos_index,
     scatter_particles_vec3f_index,
     scatter_zero_vel_index,
@@ -183,7 +184,42 @@ class DeformableObject(BaseDeformableObject):
 
 
     def write_data_to_sim(self):
-        pass
+        """Apply kinematic targets to the Newton simulation.
+
+        Reads the stored kinematic target buffer and enforces it on particles:
+        kinematic particles (flag=0) get inv_mass=0, particle_flags=0, target position,
+        and zero velocity; free particles (flag=1) get their original inv_mass and
+        particle_flags=1 (ACTIVE) restored.
+
+        Writes to both ``state_0`` and ``state_1`` so kinematic positions survive
+        the state swaps that happen between substeps.
+        """
+        if self._data.nodal_kinematic_target is None or self._default_particle_inv_mass is None:
+            return
+
+        model = SimulationManager._model
+        if model is None:
+            return
+
+        for state in (SimulationManager._state_0, SimulationManager._state_1):
+            if state is None:
+                continue
+            wp.launch(
+                enforce_kinematic_targets,
+                dim=(self._num_instances, self._particles_per_body),
+                inputs=[
+                    self._data.nodal_kinematic_target,
+                    self._particle_offsets,
+                    self._default_particle_inv_mass,
+                ],
+                outputs=[
+                    state.particle_q,
+                    state.particle_qd,
+                    model.particle_inv_mass,
+                    model.particle_flags,
+                ],
+                device=self.device,
+            )
 
     def update(self, dt: float):
         self._data.update(dt)
@@ -511,6 +547,14 @@ class DeformableObject(BaseDeformableObject):
             )
         else:
             self._default_nodal_pos_w = None
+
+        # Snapshot default particle_inv_mass for kinematic target restoration
+        model = SimulationManager._model
+        if model is not None and hasattr(model, "particle_inv_mass") and model.particle_inv_mass is not None:
+            self._default_particle_inv_mass = wp.clone(model.particle_inv_mass)
+        else:
+            self._default_particle_inv_mass = None
+
 
         # Kinematic targets — allocate and initialize with free flags
         self._data.nodal_kinematic_target = wp.zeros(

@@ -67,6 +67,20 @@ def _set_fabric_transforms(
     fabric_transforms[i] = wp.transpose(wp.mat44d(wp.math.transform_to_matrix(transform)))
 
 
+@wp.kernel(enable_backward=False)
+def _sync_particle_points(
+    fabric_points: wp.fabricarrayarray(dtype=wp.vec3f),
+    offsets: wp.fabricarray(dtype=wp.uint32),
+    particle_q: wp.array(dtype=wp.vec3f),
+    num_points: int,
+):
+    """Write Newton particle positions into Fabric mesh point arrays."""
+    i = wp.tid()
+    offset = int(offsets[i])
+    for j in range(num_points):
+        fabric_points[i][j] = particle_q[offset + j]
+
+
 class NewtonManager(PhysicsManager):
     """Newton physics manager for Isaac Lab.
 
@@ -114,6 +128,7 @@ class NewtonManager(PhysicsManager):
     _newton_stage_path = None
     _usdrt_stage = None
     _newton_index_attr = "newton:index"
+    _particle_offset_attr = "newton:particleOffset"
     _clone_physics_only = False
     _transforms_dirty: bool = False
 
@@ -300,6 +315,48 @@ class NewtonManager(PhysicsManager):
         to :meth:`sync_transforms_to_usd`, which runs at render cadence.
         """
         cls._transforms_dirty = True
+
+    @classmethod
+    def sync_particles_to_usd(cls) -> None:
+        """Write Newton particle_q to Fabric mesh point arrays for Kit viewport rendering.
+
+        For each deformable body whose mesh prim carries a ``newton:particleOffset``
+        attribute, this method copies the corresponding slice of ``state_0.particle_q``
+        into the Fabric ``points`` array so the Kit viewport reflects the current
+        deformation.
+
+        No-op when there is no ``_usdrt_stage``, no simulation state, or no
+        deformable bodies registered.
+        """
+        if cls._usdrt_stage is None or cls._state_0 is None or not cls._deformable_registry or cls._state_0.particle_q is None:
+            return
+        if not cls._transforms_dirty:
+            return
+        pq = cls._state_0.particle_q
+        try:
+            import usdrt
+
+            selection = cls._usdrt_stage.SelectPrims(
+                require_attrs=[
+                    (usdrt.Sdf.ValueTypeNames.Point3fArray, "points", usdrt.Usd.Access.ReadWrite),
+                    (usdrt.Sdf.ValueTypeNames.UInt, cls._particle_offset_attr, usdrt.Usd.Access.Read),
+                ],
+                device=str(PhysicsManager._device),
+            )
+            if selection.GetCount() == 0:
+                return
+            fabric_points = wp.fabricarrayarray(data=selection, attrib="points", dtype=wp.vec3f)
+            fabric_offsets = wp.fabricarray(data=selection, attrib=cls._particle_offset_attr)
+            num_points = cls._deformable_registry[0].particles_per_body
+            wp.launch(
+                _sync_particle_points,
+                dim=selection.GetCount(),
+                inputs=[fabric_points, fabric_offsets, pq, num_points],
+                device=PhysicsManager._device,
+            )
+            cls._transforms_dirty = False
+        except Exception as exc:
+            logger.debug("[NewtonManager] sync_particles_to_usd: %s", exc)
 
     @classmethod
     def step(cls) -> None:
@@ -661,6 +718,55 @@ class NewtonManager(PhysicsManager):
                 cls._mark_transforms_dirty()
                 cls.sync_transforms_to_usd()
 
+            # Setup Fabric particle sync for deformable bodies.
+            if cls._deformable_registry:
+                import re
+                from pxr import Usd, UsdGeom
+
+                if cls._usdrt_stage is None:
+                    cls._usdrt_stage = get_current_stage(fabric=True)
+
+                if cls._usdrt_stage is not None:
+                    stage = get_current_stage()
+                    for entry in cls._deformable_registry:
+                        prim_path_pattern = entry.prim_path
+                        particle_offsets = entry.particle_offsets
+                        for inst_idx, offset in enumerate(particle_offsets):
+                            # Resolve regex pattern to concrete instance path
+                            resolved = re.sub(r"(?<=[Ee]nv_)\.\*", str(inst_idx), prim_path_pattern)
+                            resolved = re.sub(r"\.\*", str(inst_idx), resolved)
+                            base_prim = stage.GetPrimAtPath(resolved)
+                            if not base_prim or not base_prim.IsValid():
+                                logger.debug("[NewtonManager] particle setup: prim not found at %s", resolved)
+                                continue
+                            # Find the renderable mesh prim under the base prim.
+                            # For TetMesh, _bind_cloth_vis_prims creates a companion Mesh at
+                            # {tet_path}_vis — that's what Kit actually renders, so tag it.
+                            has_tet_type = hasattr(UsdGeom, "TetMesh")
+                            mesh_prim = None
+                            for p in Usd.PrimRange(base_prim):
+                                if has_tet_type and p.IsA(UsdGeom.TetMesh):
+                                    vis_path = p.GetPath().pathString + "_vis"
+                                    vis_prim = stage.GetPrimAtPath(vis_path)
+                                    if vis_prim and vis_prim.IsValid() and vis_prim.IsA(UsdGeom.Mesh):
+                                        mesh_prim = vis_prim
+                                    else:
+                                        mesh_prim = p
+                                    break
+                                if p.IsA(UsdGeom.Mesh):
+                                    mesh_prim = p
+                                    break
+                            if mesh_prim is None:
+                                logger.debug("[NewtonManager] particle setup: no mesh prim found under %s", resolved)
+                                continue
+                            mesh_path = mesh_prim.GetPath().pathString
+                            fab_prim = cls._usdrt_stage.GetPrimAtPath(mesh_path)
+                            fab_prim.CreateAttribute(cls._particle_offset_attr, usdrt.Sdf.ValueTypeNames.UInt, True)
+                            fab_prim.GetAttribute(cls._particle_offset_attr).Set(offset)
+
+                    cls._mark_transforms_dirty()
+                    cls.sync_particles_to_usd()
+
     @classmethod
     def instantiate_builder_from_stage(cls):
         """Create builder from USD stage.
@@ -691,9 +797,15 @@ class NewtonManager(PhysicsManager):
 
         schema_resolvers = [SchemaResolverNewton(), SchemaResolverPhysx()]
 
+        from isaaclab_newton.cloner.newton_replicate import add_deformable_entry_to_builder
+
         if not env_paths:
             # No env Xforms — flat loading
             builder.add_usd(stage, schema_resolvers=schema_resolvers)
+
+            # Add deformable bodies from the registry (single world at origin).
+            for entry in cls._deformable_registry:
+                add_deformable_entry_to_builder(builder, entry, 0, [0.0, 0.0, 0.0])
         else:
             # Load everything except the env subtrees (ground plane, lights, etc.)
             ignore_paths = [path for _, path in env_paths]
@@ -736,6 +848,11 @@ class NewtonManager(PhysicsManager):
                         local_site_map[label] = [[] for _ in range(num_worlds)]
                     for proto_shape_idx in proto_shape_indices:
                         local_site_map[label][col].append(offset + proto_shape_idx)
+
+                # Add deformable bodies from the registry into this world.
+                for entry in cls._deformable_registry:
+                    add_deformable_entry_to_builder(builder, entry, col, list(pos))
+
                 builder.end_world()
 
             cls._cl_site_index_map = {
@@ -743,6 +860,10 @@ class NewtonManager(PhysicsManager):
                 **{label: (None, per_world) for label, per_world in local_site_map.items()},
             }
             cls._num_envs = len(env_paths)
+
+        # Call builder.color() if any deformable entries were added (required by VBD solver)
+        if cls._deformable_registry:
+            builder.color()
 
         cls.set_builder(builder)
 
