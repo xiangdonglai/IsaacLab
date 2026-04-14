@@ -22,6 +22,7 @@ from isaaclab.app import AppLauncher
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Tutorial on interacting with a deformable object.")
+parser.add_argument("--physics", type=str, default="physx", choices=["physx", "newton"], help="Physics backend.")
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
@@ -35,11 +36,12 @@ simulation_app = app_launcher.app
 
 import torch
 import warp as wp
-from isaaclab_physx.assets import DeformableObject, DeformableObjectCfg
 
 import isaaclab.sim as sim_utils
 import isaaclab.utils.math as math_utils
+from isaaclab.assets import DeformableObject, DeformableObjectCfg
 from isaaclab.sim import SimulationContext
+from isaaclab.sim.spawners.meshes import TetMeshCuboidCfg
 
 
 def design_scene():
@@ -55,19 +57,29 @@ def design_scene():
     # Each group will have a robot in it
     origins = [[0.25, 0.25, 0.0], [-0.25, 0.25, 0.0], [0.25, -0.25, 0.0], [-0.25, -0.25, 0.0]]
     for i, origin in enumerate(origins):
-        sim_utils.create_prim(f"/World/Origin{i}", "Xform", translation=origin)
+        sim_utils.create_prim(f"/World/env_{i}", "Xform", translation=origin)
 
     # Deformable Object
     cfg = DeformableObjectCfg(
-        prim_path="/World/Origin.*/Cube",
-        spawn=sim_utils.MeshCuboidCfg(
+        prim_path="/World/env_.*/Cube",
+        # spawn=sim_utils.MeshCuboidCfg(
+        #     size=(0.2, 0.2, 0.2),
+        #     deformable_props=sim_utils.DeformableBodyPropertiesCfg(rest_offset=0.0, contact_offset=0.001),
+        #     visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.5, 0.1, 0.0)),
+        #     physics_material=sim_utils.DeformableBodyMaterialCfg(poissons_ratio=0.4, youngs_modulus=1e5),
+        # ),
+        spawn=TetMeshCuboidCfg(
             size=(0.2, 0.2, 0.2),
-            deformable_props=sim_utils.DeformableBodyPropertiesCfg(rest_offset=0.0, contact_offset=0.001),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.5, 0.1, 0.0)),
-            physics_material=sim_utils.DeformableBodyMaterialCfg(poissons_ratio=0.4, youngs_modulus=1e5),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.2, 0.8, 0.2)),
         ),
         init_state=DeformableObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 1.0)),
-        debug_vis=True,
+        density=500.0,
+        tri_ke=1e5,
+        tri_ka=1e5,
+        tri_kd=1e-4,
+        edge_ke=100.0,
+        edge_kd=1e-2,
+        particle_radius=0.005,
     )
     cube_object = DeformableObject(cfg=cfg)
 
@@ -91,6 +103,7 @@ def run_simulator(sim: sim_utils.SimulationContext, entities: dict[str, Deformab
     nodal_kinematic_target = wp.to_torch(cube_object.data.nodal_kinematic_target).clone()
 
     # Simulate physics
+    # for _ in range(200):
     while simulation_app.is_running():
         # reset
         if count % 250 == 0:
@@ -145,7 +158,16 @@ def run_simulator(sim: sim_utils.SimulationContext, entities: dict[str, Deformab
 def main():
     """Main function."""
     # Load kit helper
-    sim_cfg = sim_utils.SimulationCfg(device=args_cli.device)
+    if args_cli.physics == "newton":
+        from isaaclab_newton.physics import NewtonCfg, VBDSolverCfg
+
+        # physics_cfg = NewtonCfg(solver_cfg=XPBDSolverCfg(iterations=100), num_substeps=8)
+        physics_cfg = NewtonCfg(solver_cfg=VBDSolverCfg(iterations=10), num_substeps=4)
+    else:
+        from isaaclab_physx.physics import PhysxCfg
+
+        physics_cfg = PhysxCfg()
+    sim_cfg = sim_utils.SimulationCfg(device=args_cli.device, physics=physics_cfg)
     sim = SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view(eye=[3.0, 0.0, 1.0], target=[0.0, 0.0, 0.5])

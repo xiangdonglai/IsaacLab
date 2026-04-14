@@ -691,9 +691,15 @@ class NewtonManager(PhysicsManager):
 
         schema_resolvers = [SchemaResolverNewton(), SchemaResolverPhysx()]
 
+        from isaaclab_newton.cloner.newton_replicate import add_deformable_entry_to_builder
+
         if not env_paths:
             # No env Xforms — flat loading
             builder.add_usd(stage, schema_resolvers=schema_resolvers)
+
+            # Add deformable bodies from the registry (single world at origin).
+            for entry in cls._deformable_registry:
+                add_deformable_entry_to_builder(builder, entry, 0, [0.0, 0.0, 0.0])
         else:
             # Load everything except the env subtrees (ground plane, lights, etc.)
             ignore_paths = [path for _, path in env_paths]
@@ -736,6 +742,11 @@ class NewtonManager(PhysicsManager):
                         local_site_map[label] = [[] for _ in range(num_worlds)]
                     for proto_shape_idx in proto_shape_indices:
                         local_site_map[label][col].append(offset + proto_shape_idx)
+
+                # Add deformable bodies from the registry into this world.
+                for entry in cls._deformable_registry:
+                    add_deformable_entry_to_builder(builder, entry, col, list(pos))
+
                 builder.end_world()
 
             cls._cl_site_index_map = {
@@ -743,6 +754,10 @@ class NewtonManager(PhysicsManager):
                 **{label: (None, per_world) for label, per_world in local_site_map.items()},
             }
             cls._num_envs = len(env_paths)
+
+        # Call builder.color() if any deformable entries were added (required by VBD solver)
+        if cls._deformable_registry:
+            builder.color()
 
         cls.set_builder(builder)
 
