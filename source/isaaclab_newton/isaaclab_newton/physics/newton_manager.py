@@ -131,6 +131,7 @@ class NewtonManager(PhysicsManager):
     _particle_offset_attr = "newton:particleOffset"
     _clone_physics_only = False
     _transforms_dirty: bool = False
+    _particles_dirty: bool = False
 
     # cubric GPU transform hierarchy (replaces CPU update_world_xforms)
     _cubric = None
@@ -218,9 +219,9 @@ class NewtonManager(PhysicsManager):
 
         Called at render cadence by :meth:`pre_render` (via
         :meth:`~isaaclab.sim.SimulationContext.render`).
-        Physics stepping marks transforms dirty via :meth:`_mark_transforms_dirty`
-        so that the expensive Fabric hierarchy update only runs once per render
-        frame rather than after every physics step.
+        Physics stepping marks transforms and particles dirty via :meth:`_mark_transforms_dirty` and 
+        :meth:`_mark_particles_dirty`, respectively, so that the expensive Fabric hierarchy update only 
+        runs once per render frame rather than after every physics step.
 
         Uses ``wp.fabricarray`` directly (no ``isaacsim.physics.newton`` extension needed).
         The Warp kernel reads ``state_0.body_q[newton_index[i]]`` and writes the
@@ -308,13 +309,14 @@ class NewtonManager(PhysicsManager):
             logger.exception("[NewtonManager] sync_transforms_to_usd FAILED")
 
     @classmethod
-    def _mark_transforms_dirty(cls) -> None:
+    def _mark_state_dirty(cls) -> None:
         """Flag that physics state has changed and Fabric needs re-sync.
 
         Called by :meth:`_simulate` after stepping. The actual sync is deferred
-        to :meth:`sync_transforms_to_usd`, which runs at render cadence.
+        to :meth:`sync_transforms_to_usd` and :meth:`sync_particles_to_usd`, which run at render cadence.
         """
         cls._transforms_dirty = True
+        cls._particles_dirty = True
 
     @classmethod
     def sync_particles_to_usd(cls) -> None:
@@ -330,7 +332,7 @@ class NewtonManager(PhysicsManager):
         """
         if cls._usdrt_stage is None or cls._state_0 is None or not cls._deformable_registry or cls._state_0.particle_q is None:
             return
-        if not cls._transforms_dirty:
+        if not cls._particles_dirty:
             return
         pq = cls._state_0.particle_q
         try:
@@ -354,7 +356,7 @@ class NewtonManager(PhysicsManager):
                 inputs=[fabric_points, fabric_offsets, pq, num_points],
                 device=PhysicsManager._device,
             )
-            cls._transforms_dirty = False
+            cls._particles_dirty = False
         except Exception as exc:
             logger.debug("[NewtonManager] sync_particles_to_usd: %s", exc)
 
@@ -396,7 +398,7 @@ class NewtonManager(PhysicsManager):
         if cfg is not None and cfg.use_cuda_graph and cls._graph is not None and "cuda" in device:  # type: ignore[union-attr]
             wp.capture_launch(cls._graph)
             if cls._usdrt_stage is not None:
-                cls._mark_transforms_dirty()
+                cls._mark_state_dirty()
         else:
             with wp.ScopedDevice(device):
                 cls._simulate()
@@ -715,7 +717,7 @@ class NewtonManager(PhysicsManager):
                     if not xformable_prim.HasWorldXform():
                         xformable_prim.SetWorldXformFromUsd()
 
-                cls._mark_transforms_dirty()
+                cls._transforms_dirty = True
                 cls.sync_transforms_to_usd()
 
             # Setup Fabric particle sync for deformable bodies.
@@ -764,7 +766,7 @@ class NewtonManager(PhysicsManager):
                             fab_prim.CreateAttribute(cls._particle_offset_attr, usdrt.Sdf.ValueTypeNames.UInt, True)
                             fab_prim.GetAttribute(cls._particle_offset_attr).Set(offset)
 
-                    cls._mark_transforms_dirty()
+                    cls._particles_dirty = True
                     cls.sync_particles_to_usd()
 
     @classmethod
@@ -1210,12 +1212,12 @@ class NewtonManager(PhysicsManager):
         """Run one simulation step with substeps and USD sync.
 
         Delegates physics work to :meth:`_simulate_physics_only` and then
-        marks transforms dirty for the next render-cadence sync.
+        marks state dirty for the next render-cadence sync.
         """
         cls._simulate_physics_only()
 
         if cls._usdrt_stage is not None:
-            cls._mark_transforms_dirty()
+            cls._mark_state_dirty()
 
     @classmethod
     def get_solver_convergence_steps(cls) -> dict[str, float | int]:
