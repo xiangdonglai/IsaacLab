@@ -223,8 +223,6 @@ class DeformableObject(BaseDeformableObject):
 
     def update(self, dt: float):
         self._data.update(dt)
-        # Update USD visualization if enabled
-        self._update_cloth_vis()
 
     """
     Operations - Write to simulation.
@@ -586,8 +584,8 @@ class DeformableObject(BaseDeformableObject):
 
         Finds the spawned ``UsdGeom.Mesh`` or ``UsdGeom.TetMesh`` prim for each instance
         (typically at ``{prim_path}/geometry/mesh``), clears parent Xform transforms
-        (Newton writes world-space positions), writes initial points, and stores
-        references for per-step updates via :meth:`_update_cloth_vis`.
+        (Newton writes world-space positions), writes initial points, where the surface mesh prim stores 
+        particle offsets that are read while updating the visualization.
         """
         from pxr import Gf, Vt
 
@@ -672,22 +670,6 @@ class DeformableObject(BaseDeformableObject):
 
             self._vis_prims.append((geom_prim, offset))
 
-    def _update_cloth_vis(self) -> None:
-        """Write current Newton particle positions into Kit cloth mesh prims."""
-        if not hasattr(self, "_vis_prims") or not self._vis_prims:
-            return
-
-        state = SimulationManager._state_0
-        if state is None or state.particle_q is None:
-            return
-
-        from pxr import Gf, Vt
-
-        pts_np = state.particle_q.numpy()
-        for mesh, offset in self._vis_prims:
-            inst_pts = pts_np[offset : offset + self._particles_per_body]
-            points = Vt.Vec3fArray([Gf.Vec3f(float(p[0]), float(p[1]), float(p[2])) for p in inst_pts])
-            mesh.GetPointsAttr().Set(points)
 
     """
     Internal simulation callbacks.
