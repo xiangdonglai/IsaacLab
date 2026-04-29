@@ -72,8 +72,11 @@ def define_deformable_body_properties(
     if not prim.IsValid():
         raise ValueError(f"Prim path '{prim_path}' is not valid.")
 
-    # traverse the prim and get the mesh. If none or multiple meshes are found, raise error.
-    matching_prims = get_all_matching_child_prims(prim_path, lambda p: p.GetTypeName() == "Mesh")
+    # traverse the prim and get the mesh. Search for both Mesh and TetMesh prims
+    # so that pre-tetrahedralized assets (e.g. Newton duck) are discovered.
+    matching_prims = get_all_matching_child_prims(
+        prim_path, lambda p: p.GetTypeName() in ("Mesh", "TetMesh")
+    )
     # check if the volume deformable mesh is valid
     if len(matching_prims) == 0:
         raise ValueError(f"Could not find any mesh in '{prim_path}'. Please check asset.")
@@ -91,8 +94,20 @@ def define_deformable_body_properties(
     if not mesh_prim.IsValid():
         raise ValueError(f"Mesh prim path '{mesh_prim_path}' is not valid.")
 
-    # set root prim properties based on the type of the deformable mesh (surface vs volume)
-    if deformable_type == "surface":
+    # If the prim is already a TetMesh (pre-tetrahedralized), skip PhysX
+    # cooking and just apply the deformable body API directly.
+    is_tetmesh = mesh_prim.GetTypeName() == "TetMesh"
+
+    if is_tetmesh:
+        # Pre-tetrahedralized mesh: apply deformable body API without cooking.
+        # Apply to both the TetMesh prim and the root prim so that material
+        # binding (which targets the root) works correctly.
+        from pxr import PhysxSchema
+
+        PhysxSchema.PhysxDeformableBodyAPI.Apply(mesh_prim)
+        prim.AddAppliedSchema("OmniPhysicsDeformableBodyAPI")
+        success = True
+    elif deformable_type == "surface":
         sim_mesh_prim_path = prim_path + "/sim_mesh" if sim_mesh_prim_path is None else sim_mesh_prim_path
         success = deformableUtils.create_auto_surface_deformable_hierarchy(
             stage=stage,

@@ -230,6 +230,18 @@ class CoupledSolver:
         self.collision_pipeline = collision_pipeline
         self.contacts = contacts
 
+        # For kinematic coupling mode, create a Featherstone solver as kinematic
+        # integrator (mirrors the Newton softbody_franka example exactly).
+        if cfg.coupling_mode == "kinematic":
+            self._kinematic_solver = SolverFeatherstone(model, update_mass_matrix_interval=10)
+            self._gravity_zero = wp.zeros(1, dtype=wp.vec3)
+            self._gravity_saved = wp.clone(model.gravity)
+            # Save original PD gains and create zeroed versions for kinematic step
+            self._ke_saved = wp.clone(model.joint_target_ke)
+            self._kd_saved = wp.clone(model.joint_target_kd)
+            self._ke_zero = wp.zeros_like(model.joint_target_ke)
+            self._kd_zero = wp.zeros_like(model.joint_target_kd)
+
         logger.info(
             "CoupledSolver initialized: %s + VBD(%s), coupling_mode=%s",
             rigid_solver_type,
@@ -258,10 +270,57 @@ class CoupledSolver:
             contacts: Ignored -- the solver uses its own internal contacts.
             dt: Substep timestep [s].
         """
-        if self._coupling_mode == "one_way":
+        if self._coupling_mode == "kinematic":
+            self._step_kinematic(state_in, state_out, control, dt)
+        elif self._coupling_mode == "one_way":
             self._step_one_way(state_in, state_out, control, dt)
         else:
             self._step_two_way(state_in, state_out, control, dt)
+
+    def _step_kinematic(self, state_in: State, state_out: State, control: Control, dt: float) -> None:
+        """Kinematic coupling: mirrors Newton's softbody_franka example exactly.
+
+        1. Clear forces.
+        2. Assign joint_qd from control targets (velocity = (target - current) / frame_dt).
+        3. Disable gravity and rigid contacts for the Featherstone step.
+        4. Step Featherstone as kinematic integrator (q += qd * dt).
+        5. Restore gravity, collision detect, VBD step.
+        """
+        model = self._model
+
+        # 1. Clear forces
+        state_in.clear_forces()
+        state_out.clear_forces()
+
+        # 2. Kinematic rigid step: assign qd, disable gravity/contacts/PD gains
+        saved_particle_count = model.particle_count
+        saved_shape_contact_pair_count = model.shape_contact_pair_count
+        model.particle_count = 0
+        model.gravity.assign(self._gravity_zero)
+        model.shape_contact_pair_count = 0
+
+        # Zero out PD gains so Featherstone acts as a pure kinematic integrator
+        model.joint_target_ke.assign(self._ke_zero)
+        model.joint_target_kd.assign(self._kd_zero)
+
+        # Assign joint velocities from control targets
+        state_in.joint_qd.assign(control.joint_target_vel)
+
+        self._kinematic_solver.step(state_in, state_out, control, None, dt)
+
+        # 3. Restore everything
+        state_in.particle_f.zero_()
+        model.particle_count = saved_particle_count
+        model.gravity.assign(self._gravity_saved)
+        model.shape_contact_pair_count = saved_shape_contact_pair_count
+        model.joint_target_ke.assign(self._ke_saved)
+        model.joint_target_kd.assign(self._kd_saved)
+
+        # 4. Collision detection
+        self.collision_pipeline.collide(state_in, self.contacts)
+
+        # 5. VBD step
+        self.vbd.step(state_in, state_out, control, self.contacts, dt)
 
     def _step_one_way(self, state_in: State, state_out: State, control: Control, dt: float) -> None:
         """One-way coupling: collide, then rigid step, then VBD."""
