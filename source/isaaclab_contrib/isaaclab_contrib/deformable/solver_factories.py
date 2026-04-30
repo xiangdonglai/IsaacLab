@@ -39,9 +39,21 @@ def create_vbd_solver(manager_cls, cfg_dict: dict, solver_cfg) -> None:
     manager_cls._solver = SolverVBD(manager_cls._model, **filtered_cfg)
     logger.info("VBD: SolverVBD created successfully")
 
-    # VBD may need its own collision pipeline for body-particle contacts.
-    # If the solver_cfg has collision attributes, set up the pipeline.
+    # VBD needs a collision pipeline for:
+    # - Particle self-contacts (cloth self-collision)
+    # - Body-particle contacts when AVBD integrates rigid bodies
+    needs_pipeline = False
     if hasattr(solver_cfg, "particle_enable_self_contact") and solver_cfg.particle_enable_self_contact:
+        needs_pipeline = True
+    if not getattr(solver_cfg, "integrate_with_external_rigid_solver", True):
+        # AVBD mode: VBD handles rigid bodies; needs collision pipeline for
+        # body-particle and body-body contacts.
+        needs_pipeline = True
+        # AVBD updates body_q/body_qd but not joint_q/joint_qd.  Signal the
+        # newton manager to run eval_ik after each simulation step so that
+        # articulation data (joint positions/velocities) stays in sync.
+        manager_cls._needs_ik_sync = True
+    if needs_pipeline:
         manager_cls._needs_collision_pipeline = True
         manager_cls._initialize_contacts()
 

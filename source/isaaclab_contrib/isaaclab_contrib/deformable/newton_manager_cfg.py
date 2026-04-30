@@ -78,6 +78,68 @@ class VBDSolverCfg(NewtonSolverCfg):
     Used by the AVBD rigid contact solver. Increase to make rigid contacts stiffer.
     """
 
+    rigid_avbd_beta: float = 1.0e5
+    """Penalty ramp rate for rigid body constraints [dimensionless].
+
+    Controls how fast the adaptive penalty stiffness grows with constraint violation.
+    Only used when :attr:`integrate_with_external_rigid_solver` is ``False`` (AVBD mode).
+    """
+
+    rigid_avbd_gamma: float = 0.99
+    """Warmstart decay factor for rigid body constraint penalties [dimensionless].
+
+    Cross-step decay factor applied to penalty stiffness at the start of each substep.
+    Only used when :attr:`integrate_with_external_rigid_solver` is ``False`` (AVBD mode).
+    """
+
+    rigid_joint_linear_k_start: float = 1.0e4
+    """Initial penalty seed for linear joint constraints [N/m].
+
+    Only used when :attr:`integrate_with_external_rigid_solver` is ``False`` (AVBD mode).
+    """
+
+    rigid_joint_angular_k_start: float = 1.0e1
+    """Initial penalty seed for angular joint constraints [N*m/rad].
+
+    Only used when :attr:`integrate_with_external_rigid_solver` is ``False`` (AVBD mode).
+    """
+
+    rigid_joint_linear_ke: float = 1.0e9
+    """Stiffness cap for non-cable linear joint constraints [N/m].
+
+    Only used when :attr:`integrate_with_external_rigid_solver` is ``False`` (AVBD mode).
+    """
+
+    rigid_joint_angular_ke: float = 1.0e9
+    """Stiffness cap for non-cable angular joint constraints [N*m/rad].
+
+    Only used when :attr:`integrate_with_external_rigid_solver` is ``False`` (AVBD mode).
+    """
+
+    rigid_joint_linear_kd: float = 1.0e-2
+    """Rayleigh damping coefficient for non-cable linear joint constraints [N*s/m].
+
+    Only used when :attr:`integrate_with_external_rigid_solver` is ``False`` (AVBD mode).
+    """
+
+    rigid_joint_angular_kd: float = 0.0
+    """Rayleigh damping coefficient for non-cable angular joint constraints [N*m*s/rad].
+
+    Only used when :attr:`integrate_with_external_rigid_solver` is ``False`` (AVBD mode).
+    """
+
+    rigid_body_contact_buffer_size: int = 64
+    """Maximum body-body contacts per body [count].
+
+    Only used when :attr:`integrate_with_external_rigid_solver` is ``False`` (AVBD mode).
+    """
+
+    rigid_body_particle_contact_buffer_size: int = 256
+    """Maximum body-particle contacts per body [count].
+
+    Only used when :attr:`integrate_with_external_rigid_solver` is ``False`` (AVBD mode).
+    """
+
 
 @configclass
 class CoupledSolverCfg(NewtonSolverCfg):

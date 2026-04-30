@@ -27,7 +27,7 @@ except OSError:
         _cudart = ctypes.CDLL("libcudart.so")
     except OSError:
         _cudart = None
-from newton import Axis, CollisionPipeline, Contacts, Control, Model, ModelBuilder, State, eval_fk
+from newton import Axis, CollisionPipeline, Contacts, Control, Model, ModelBuilder, State, eval_fk, eval_ik
 from newton._src.usd.schemas import SchemaResolverNewton, SchemaResolverPhysx
 from newton.sensors import SensorContact as NewtonContactSensor
 from newton.sensors import SensorFrameTransform
@@ -101,6 +101,7 @@ class NewtonManager(PhysicsManager):
     # Collision and contacts
     _contacts: Contacts | None = None
     _needs_collision_pipeline: bool = False
+    _needs_ik_sync: bool = False
     _collision_pipeline = None
     _collision_cfg: NewtonCollisionPipelineCfg | None = None
     _newton_contact_sensors: dict = {}  # Maps sensor_key to NewtonContactSensor
@@ -200,7 +201,14 @@ class NewtonManager(PhysicsManager):
 
     @classmethod
     def forward(cls) -> None:
-        """Update articulation kinematics without stepping physics."""
+        """Update articulation kinematics without stepping physics.
+
+        When :attr:`_needs_ik_sync` is True (AVBD mode), forward kinematics is
+        skipped because body_q is the source of truth — running FK would
+        overwrite the AVBD solver's body_q with stale joint_q values.
+        """
+        if cls._needs_ik_sync:
+            return
         eval_fk(cls._model, cls._state_0.joint_q, cls._state_0.joint_qd, cls._state_0, None)
         cls._fk_dirty = False
 
@@ -443,6 +451,7 @@ class NewtonManager(PhysicsManager):
         cls._control = None
         cls._contacts = None
         cls._needs_collision_pipeline = False
+        cls._needs_ik_sync = False
         cls._collision_pipeline = None
         cls._collision_cfg = None
         cls._newton_contact_sensors = {}
@@ -1160,6 +1169,11 @@ class NewtonManager(PhysicsManager):
                 else:
                     cls._state_0, cls._state_1 = cls._state_1, cls._state_0
                 cls._state_0.clear_forces()
+
+        # AVBD mode: sync body_q/body_qd → joint_q/joint_qd via inverse kinematics
+        # so that articulation data (joint positions/velocities) reflects the solver output.
+        if cls._needs_ik_sync:
+            eval_ik(cls._model, cls._state_0, cls._state_0.joint_q, cls._state_0.joint_qd)
 
         # Update frame transform sensors
         if cls._newton_frame_transform_sensors:

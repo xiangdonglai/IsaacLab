@@ -240,10 +240,10 @@ class PickVBDCubeEnv(DirectRLEnv):
         def _on_key(symbol, modifiers, _self=self):
             if symbol == key.R:
                 _self._request_reset = True
-                logger.info("[PickVBDCubeEnv] Reset requested via R key")
+                print("[PickVBDCubeEnv] Reset requested via R key")
             elif symbol == key.G:
                 _self._gripper_closed = not _self._gripper_closed
-                logger.info("[PickVBDCubeEnv] Gripper %s via G key", "closed" if _self._gripper_closed else "open")
+                print(f"[PickVBDCubeEnv] Gripper {'closed' if _self._gripper_closed else 'open'} via G key")
 
         self._newton_viewer_gl.renderer.register_key_press(_on_key)
         self._reset_key_registered = True
