@@ -107,8 +107,13 @@ class PickAVBDCubeEnv(DirectRLEnv):
 
             ik_state = newton_model.state()
             newton.eval_fk(newton_model, newton_model.joint_q, newton_model.joint_qd, ik_state)
-            body_q_np = ik_state.body_q.numpy()
-            self._ee_tf = wp.transform(*body_q_np[self._ee_ik_index])
+            # Original: initialize from FK default pose
+            # self._ee_tf = wp.transform(*body_q_np[self._ee_ik_index])
+            # Initialize IK target to a pre-grasp pose above the cube
+            self._ee_tf = wp.transform(
+                wp.vec3(0.3118, 0.0000, 0.1312),
+                wp.quat(0.9654, 0.0214, -0.2598, -0.0058),
+            )
             ee_pos = wp.transform_get_translation(self._ee_tf)
 
             ee_rot = wp.transform_get_rotation(self._ee_tf)
@@ -193,6 +198,15 @@ class PickAVBDCubeEnv(DirectRLEnv):
             )
 
         target_pos = wp.transform_get_translation(self._ee_tf)
+
+        if not hasattr(self, "_ik_print_count"):
+            self._ik_print_count = 0
+        self._ik_print_count += 1
+        if self._ik_print_count % 60 == 0:
+            target_rot = wp.transform_get_rotation(self._ee_tf)
+            print(f"[IK Target] pos=({float(target_pos[0]):.4f}, {float(target_pos[1]):.4f}, {float(target_pos[2]):.4f}) "
+                  f"quat=({float(target_rot[0]):.4f}, {float(target_rot[1]):.4f}, {float(target_rot[2]):.4f}, {float(target_rot[3]):.4f})")
+
         xform = UsdGeom.Xformable(self._sphere_prim)
         for op in xform.GetOrderedXformOps():
             if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
