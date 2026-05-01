@@ -42,6 +42,7 @@ __all__ = [
     "spawn_mesh_cylinder",
     "spawn_mesh_sphere",
     "spawn_mesh_square",
+    "spawn_tet_mesh_cuboid",
     "MeshCapsuleCfg",
     "MeshCfg",
     "MeshConeCfg",
@@ -49,6 +50,7 @@ __all__ = [
     "MeshCylinderCfg",
     "MeshSphereCfg",
     "MeshSquareCfg",
+    "TetMeshCuboidCfg",
     "spawn_camera",
     "spawn_sensor_frame",
     "FisheyeCameraCfg",
@@ -114,6 +116,7 @@ from .meshes import (
     spawn_mesh_cylinder,
     spawn_mesh_sphere,
     spawn_mesh_square,
+    spawn_tet_mesh_cuboid,
     MeshCapsuleCfg,
     MeshCfg,
     MeshConeCfg,
@@ -121,6 +124,7 @@ from .meshes import (
     MeshCylinderCfg,
     MeshSquareCfg,
     MeshSphereCfg,
+    TetMeshCuboidCfg,
 )
 from .sensors import spawn_camera, spawn_sensor_frame, FisheyeCameraCfg, PinholeCameraCfg, SensorFrameCfg
 from .shapes import (

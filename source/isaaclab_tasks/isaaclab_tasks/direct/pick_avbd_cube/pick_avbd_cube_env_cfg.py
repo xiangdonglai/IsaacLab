@@ -32,7 +32,7 @@ FRANKA_PANDA_AVBD_CFG.actuators["panda_shoulder"].damping = 1.0
 FRANKA_PANDA_AVBD_CFG.actuators["panda_forearm"].stiffness = 1e4
 FRANKA_PANDA_AVBD_CFG.actuators["panda_forearm"].damping = 1.0
 FRANKA_PANDA_AVBD_CFG.actuators["panda_hand"].stiffness = 2e4
-FRANKA_PANDA_AVBD_CFG.actuators["panda_hand"].damping = 1.0
+FRANKA_PANDA_AVBD_CFG.actuators["panda_hand"].damping = 0.01
 
 
 @configclass
@@ -132,7 +132,7 @@ class PickAVBDCubeEnvCfg(DirectRLEnvCfg):
     # deformable cube (VBD)
     cube: DeformableObjectCfg = DeformableObjectCfg(
         prim_path="/World/envs/env_.*/cube",
-        spawn=sim_utils.MeshCuboidCfg(
+        spawn=sim_utils.TetMeshCuboidCfg(
             size=(0.05, 0.05, 0.05),
             deformable_props=sim_utils.DeformableBodyPropertiesCfg(),
             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.2, 0.8, 0.2)),

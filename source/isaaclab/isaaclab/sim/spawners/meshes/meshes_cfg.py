@@ -155,3 +155,24 @@ class MeshSquareCfg(MeshCfg):
     """Edge length of the square (in m)."""
     resolution: tuple[int, int] = (5, 5)
     """Resolution of the square (in elements/edges per side)."""
+
+
+@configclass
+class TetMeshCuboidCfg(MeshCfg):
+    """Configuration parameters for a cuboid mesh prim with tetrahedral volumetric data.
+
+    Generates a regular grid of vertices decomposed into tetrahedra (5 tets per hex cell).
+    The surface triangles are written as ``UsdGeom.TetMesh`` geometry for rendering, and the
+    tet indices are stored as ``tetVertexIndices`` on the mesh prim for the Newton backend
+    to read.
+
+    See :meth:`spawn_tet_mesh_cuboid` for more information.
+    """
+
+    func: Callable | str = "{DIR}.meshes:spawn_tet_mesh_cuboid"
+
+    size: tuple[float, float, float] = MISSING
+    """Size of the cuboid [m] as (x, y, z)."""
+
+    resolution: int = 4
+    """Number of cells along each axis. Total tets = resolution^3 * 5."""
