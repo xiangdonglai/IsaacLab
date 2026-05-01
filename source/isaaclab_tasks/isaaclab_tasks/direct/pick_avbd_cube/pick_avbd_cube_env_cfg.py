@@ -27,11 +27,12 @@ from isaaclab_assets.robots.franka import FRANKA_PANDA_CFG, FRANKA_PANDA_HIGH_PD
 # that H ≈ ke + kd * ke / dt ≈ 400 + 2400 = 2800, allowing drives to
 # converge within ~10 iterations.
 FRANKA_PANDA_AVBD_CFG = FRANKA_PANDA_HIGH_PD_CFG.copy()
-FRANKA_PANDA_AVBD_CFG.actuators["panda_shoulder"].stiffness = 400.0
-FRANKA_PANDA_AVBD_CFG.actuators["panda_shoulder"].damping = 0.1
-FRANKA_PANDA_AVBD_CFG.actuators["panda_forearm"].stiffness = 400.0
-FRANKA_PANDA_AVBD_CFG.actuators["panda_forearm"].damping = 0.1
-FRANKA_PANDA_AVBD_CFG.actuators["panda_hand"].damping = 0.1
+FRANKA_PANDA_AVBD_CFG.actuators["panda_shoulder"].stiffness = 1e4
+FRANKA_PANDA_AVBD_CFG.actuators["panda_shoulder"].damping = 1.0
+FRANKA_PANDA_AVBD_CFG.actuators["panda_forearm"].stiffness = 1e4
+FRANKA_PANDA_AVBD_CFG.actuators["panda_forearm"].damping = 1.0
+FRANKA_PANDA_AVBD_CFG.actuators["panda_hand"].stiffness = 2e4
+FRANKA_PANDA_AVBD_CFG.actuators["panda_hand"].damping = 1.0
 
 
 @configclass
