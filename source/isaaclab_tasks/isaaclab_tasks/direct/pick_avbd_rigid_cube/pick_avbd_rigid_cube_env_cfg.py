@@ -3,14 +3,14 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Configuration for the Pick-AVBD-Cube environment: Franka robot + deformable cube with unified AVBD solver."""
+"""Configuration for Pick-AVBD-Rigid-Cube: Franka + rigid cube, all via AVBD solver."""
 
 from isaaclab_contrib.deformable.newton_manager_cfg import NewtonModelCfg, VBDSolverCfg
 from isaaclab_newton.physics import NewtonCfg
 from isaaclab_visualizers.newton import NewtonVisualizerCfg
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets.deformable_object import DeformableObjectCfg
+from isaaclab.assets import RigidObjectCfg
 from isaaclab.envs import DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
@@ -18,14 +18,9 @@ from isaaclab.utils import configclass
 
 from isaaclab_tasks.utils import PresetCfg, preset
 
-from isaaclab_assets.robots.franka import FRANKA_PANDA_CFG, FRANKA_PANDA_HIGH_PD_CFG
+from isaaclab_assets.robots.franka import FRANKA_PANDA_HIGH_PD_CFG
 
-# AVBD-specific Franka config: high position stiffness, low damping.
-# AVBD damping formula is drive_d = kd * ke, and the implicit Hessian is
-# H = ke + kd * ke / dt.  With small substep dt (~1/600), even moderate kd
-# produces massive velocity damping that locks joints. Use kd ~ 0.01 so
-# that H ≈ ke + kd * ke / dt ≈ 400 + 2400 = 2800, allowing drives to
-# converge within ~10 iterations.
+# AVBD-specific Franka config
 FRANKA_PANDA_AVBD_CFG = FRANKA_PANDA_HIGH_PD_CFG.copy()
 FRANKA_PANDA_AVBD_CFG.actuators["panda_shoulder"].stiffness = 1e4
 FRANKA_PANDA_AVBD_CFG.actuators["panda_shoulder"].damping = 1.0
@@ -37,39 +32,25 @@ FRANKA_PANDA_AVBD_CFG.spawn.rigid_props.disable_gravity = False
 
 
 @configclass
-class DeformableNewtonCfg(NewtonCfg):
-    """NewtonCfg extended with model-level contact parameters for deformable objects.
-
-    Uses a distinct class name so that ``_is_kitless_physics`` does not
-    match it, ensuring Kit is launched for USD deformable spawning.
-    """
+class RigidAVBDNewtonCfg(NewtonCfg):
+    """NewtonCfg subclass — distinct name ensures Kit is launched for USD spawning."""
 
     model_cfg: NewtonModelCfg | None = None
     """Global Newton model parameters applied after builder finalization."""
 
 
 MODEL_CFG = NewtonModelCfg(
-    soft_contact_ke=1e3,
-    soft_contact_kd=100.0,
-    soft_contact_mu=0.5,
     shape_material_ke=1e3,
-    shape_material_kd=100.0,
+    shape_material_kd=1.0,
     shape_material_mu=0.5,
 )
 
 
 @configclass
-class PickAVBDCubePhysicsCfg(PresetCfg):
-    """Physics presets for the Pick-AVBD-Cube environment.
+class PickAVBDRigidCubePhysicsCfg(PresetCfg):
+    """Physics presets: pure rigid-body scene using AVBD solver."""
 
-    Uses the unified AVBD solver: VBD handles both particles and articulated
-    rigid bodies in a single solver (no external rigid solver).
-
-    Presets:
-        - ``default`` / ``newton``: Unified AVBD solver (recommended).
-    """
-
-    default: DeformableNewtonCfg = DeformableNewtonCfg(
+    default: RigidAVBDNewtonCfg = RigidAVBDNewtonCfg(
         solver_cfg=VBDSolverCfg(
             iterations=10,
             integrate_with_external_rigid_solver=False,
@@ -90,83 +71,57 @@ class PickAVBDCubePhysicsCfg(PresetCfg):
         use_cuda_graph=True,
     )
 
-    newton: DeformableNewtonCfg = default
+    newton: RigidAVBDNewtonCfg = default
 
 
 @configclass
-class PickAVBDCubeEnvCfg(DirectRLEnvCfg):
-    # env
+class PickAVBDRigidCubeEnvCfg(DirectRLEnvCfg):
     decimation = 2
     episode_length_s = 5.0
-    # obs = joint_pos(7) + joint_vel(7) + cube_centroid(3) = 17, act = 7
     action_space = 7
     observation_space = 17
     state_space = 0
 
-    # simulation
     sim: SimulationCfg = SimulationCfg(
         dt=1 / 60,
         render_interval=decimation,
-        physics=PickAVBDCubePhysicsCfg(),
+        physics=PickAVBDRigidCubePhysicsCfg(),
         visualizer_cfgs=NewtonVisualizerCfg(),
     )
 
-    # scene
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
         num_envs=1,
         env_spacing=4.0,
         replicate_physics=True,
     )
 
-    # robot — AVBD needs low damping (see FRANKA_PANDA_AVBD_CFG comment above)
     robot_cfg = preset(
         default=FRANKA_PANDA_AVBD_CFG.replace(prim_path="/World/envs/env_.*/Robot"),
         franka_high_pd=FRANKA_PANDA_AVBD_CFG.replace(prim_path="/World/envs/env_.*/Robot"),
     )
 
-    # joint names to control (7 arm joints, excluding fingers)
     arm_joint_names = ["panda_joint[1-7]"]
-
-    # control mode: "position" or "velocity"
     control_mode: str = "position"
-
-    # action scale applied to raw actions before use as targets
     action_scale = 0.5
 
-    # deformable cube (VBD)
-    cube: DeformableObjectCfg = DeformableObjectCfg(
+    # Rigid cube (100g, ~same mass as finger bodies)
+    cube: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/cube",
-        spawn=sim_utils.TetMeshCuboidCfg(
+        spawn=sim_utils.MeshCuboidCfg(
             size=(0.05, 0.05, 0.05),
-            deformable_props=sim_utils.DeformableBodyPropertiesCfg(),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
+            collision_props=sim_utils.CollisionPropertiesCfg(),
             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.2, 0.8, 0.2)),
-            physics_material=sim_utils.DeformableBodyMaterialCfg(
-                density=500.0,
-                youngs_modulus=2.5e5,
-                poissons_ratio=0.25,
-                particle_radius=0.005,
-            ),
+            mass_props=sim_utils.MassPropertiesCfg(mass=0.1),
         ),
-        init_state=DeformableObjectCfg.InitialStateCfg(
+        init_state=RigidObjectCfg.InitialStateCfg(
             pos=(0.25, 0.0, 0.05),
         ),
     )
 
-    # disable rigid-body collision between robot and ground plane
     disable_robot_ground_collision: bool = True
-    """When True, set the ground plane's collision group to 0 in Newton so the
-    robot arm does not collide with the ground. Soft (particle) contacts are
-    unaffected. Defaults to True."""
-
-    # interactive IK: when True, spawn a draggable sphere and solve IK each step
     interactive_ik: bool = False
 
-    # reward scales
     rew_scale_cube_height = 5.0
-    """Reward for lifting cube centroid higher [per m]."""
-
     rew_scale_ee_cube_dist = -2.0
-    """Penalty for EE-to-cube-centroid distance [per m]."""
-
     rew_scale_joint_vel = -0.01
-    """Penalty for joint velocities."""
