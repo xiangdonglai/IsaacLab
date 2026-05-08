@@ -15,9 +15,35 @@ from __future__ import annotations
 import inspect
 import logging
 
+from newton import eval_ik
 from newton.solvers import SolverVBD
 
 logger = logging.getLogger(__name__)
+
+
+class AVBDSolverWrapper:
+    """Thin wrapper around :class:`SolverVBD` that runs ``eval_ik`` after each step.
+
+    When AVBD mode is active (``integrate_with_external_rigid_solver=False``),
+    the VBD solver updates ``body_q`` but not ``joint_q``.  This wrapper
+    calls ``eval_ik`` after every ``step()`` to keep ``joint_q`` in sync
+    so that IsaacLab's articulation data (joint positions/velocities)
+    reflects the solver output.
+
+    All other attributes are forwarded to the underlying solver.
+    """
+
+    def __init__(self, vbd_solver: SolverVBD, model):
+        self._vbd = vbd_solver
+        self._model = model
+
+    def step(self, state_in, state_out, control, contacts, dt):
+        self._vbd.step(state_in, state_out, control, contacts, dt)
+        # state_in has the final body_q after VBD's internal copy-back.
+        eval_ik(self._model, state_in, state_in.joint_q, state_in.joint_qd)
+
+    def __getattr__(self, name):
+        return getattr(self._vbd, name)
 
 
 def create_vbd_solver(manager_cls, cfg_dict: dict, solver_cfg) -> None:
@@ -36,8 +62,17 @@ def create_vbd_solver(manager_cls, cfg_dict: dict, solver_cfg) -> None:
     logger.info("VBD: model particle_count=%s", getattr(manager_cls._model, "particle_count", "N/A"))
     num_groups = len(getattr(manager_cls._model, "particle_color_groups", []))
     logger.info("VBD: model particle_color_groups has %d groups", num_groups)
-    manager_cls._solver = SolverVBD(manager_cls._model, **filtered_cfg)
+    vbd = SolverVBD(manager_cls._model, **filtered_cfg)
     logger.info("VBD: SolverVBD created successfully")
+
+    avbd_mode = not getattr(solver_cfg, "integrate_with_external_rigid_solver", True)
+    if avbd_mode:
+        # articulated robot arm is handled by AVBD. Needs extra eval_ik after each step to keep joint_q in sync.
+        # Wrap solver so eval_ik syncs body_q → joint_q after each step.
+        manager_cls._solver = AVBDSolverWrapper(vbd, manager_cls._model)
+        logger.info("VBD: Wrapped with AVBDSolverWrapper (eval_ik per step)")
+    else:
+        manager_cls._solver = vbd
 
     # VBD needs a collision pipeline for:
     # - Particle self-contacts (cloth self-collision)
@@ -45,14 +80,8 @@ def create_vbd_solver(manager_cls, cfg_dict: dict, solver_cfg) -> None:
     needs_pipeline = False
     if hasattr(solver_cfg, "particle_enable_self_contact") and solver_cfg.particle_enable_self_contact:
         needs_pipeline = True
-    if not getattr(solver_cfg, "integrate_with_external_rigid_solver", True):
-        # AVBD mode: VBD handles rigid bodies; needs collision pipeline for
-        # body-particle and body-body contacts.
+    if avbd_mode:
         needs_pipeline = True
-        # AVBD updates body_q/body_qd but not joint_q/joint_qd.  Signal the
-        # newton manager to run eval_ik after each simulation step so that
-        # articulation data (joint positions/velocities) stays in sync.
-        manager_cls._needs_ik_sync = True
     if needs_pipeline:
         manager_cls._needs_collision_pipeline = True
         manager_cls._initialize_contacts()
