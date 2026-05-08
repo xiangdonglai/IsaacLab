@@ -107,11 +107,12 @@ class PickAVBDCubeEnv(DirectRLEnv):
 
             ik_state = newton_model.state()
             newton.eval_fk(newton_model, newton_model.joint_q, newton_model.joint_qd, ik_state)
+            ik_state_body_q = ik_state.body_q.numpy()
             # Original: initialize from FK default pose
-            # self._ee_tf = wp.transform(*body_q_np[self._ee_ik_index])
+            # self._ee_tf = wp.transform(*ik_state_body_q[self._ee_ik_index])
             # Initialize IK target to a pre-grasp pose above the cube
             self._ee_tf = wp.transform(
-                wp.vec3(0.3118, 0.0000, 0.1312),
+                wp.vec3(0.3022, 0.0000, 0.1257),
                 wp.quat(0.9654, 0.0214, -0.2598, -0.0058),
             )
             ee_pos = wp.transform_get_translation(self._ee_tf)
@@ -232,8 +233,8 @@ class PickAVBDCubeEnv(DirectRLEnv):
         # For AVBD, target slightly inside the cube surface (half cube width
         # minus margin) so the drive force balances with contact forces rather
         # than overpowering them.  Cube is 5cm wide, finger travel 0-4cm each.
-        # finger_pos = 0.008 if self._gripper_closed else 0.04
-        finger_pos = 0.025 if self._gripper_closed else 0.04
+        finger_pos = 0.008 if self._gripper_closed else 0.04
+        # finger_pos = 0.025 if self._gripper_closed else 0.04
         finger_target = torch.full(
             (self.num_envs, len(self._finger_joint_idx)),
             finger_pos,
@@ -319,6 +320,18 @@ class PickAVBDCubeEnv(DirectRLEnv):
         self.actions = actions.clone()
 
     def _apply_action(self) -> None:
+        # After arm converges to pre-grasp, trigger a full env reset so
+        # the cube returns to its initial position (it gets pushed during
+        # the arm's initial sweep to the IK target).
+        if not hasattr(self, "_arm_settled"):
+            self._arm_settled = False
+            self._settle_counter = 0
+        if not self._arm_settled:
+            self._settle_counter += 1
+            if self._settle_counter >= 100:
+                self._arm_settled = True
+                self._request_reset = True
+
         if not self._reset_key_registered and not self._ik_available:
             self._try_find_viewer_for_reset_key()
 

@@ -204,10 +204,12 @@ class NewtonManager(PhysicsManager):
         """Update articulation kinematics without stepping physics.
 
         When :attr:`_needs_ik_sync` is True (AVBD mode), forward kinematics is
-        skipped because body_q is the source of truth — running FK would
-        overwrite the AVBD solver's body_q with stale joint_q values.
+        skipped UNLESS ``_fk_dirty`` is set (e.g. after a reset that wrote new
+        joint positions).  This prevents Kit's per-frame ``forward()`` call from
+        overwriting the AVBD solver's body_q, while still allowing resets to
+        propagate joint_q changes to body_q.
         """
-        if cls._needs_ik_sync:
+        if cls._needs_ik_sync and not cls._fk_dirty:
             return
         eval_fk(cls._model, cls._state_0.joint_q, cls._state_0.joint_qd, cls._state_0, None)
         cls._fk_dirty = False

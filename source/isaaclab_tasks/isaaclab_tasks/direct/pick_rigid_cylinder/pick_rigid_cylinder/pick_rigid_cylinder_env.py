@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Pick-AVBD-Rigid-Cube: Franka + rigid cube, all via AVBD solver."""
+"""Pick-Rigid-Cylinder environment: Franka robot interacts with a rigid cylinder."""
 
 from __future__ import annotations
 
@@ -12,11 +12,6 @@ from collections.abc import Sequence
 
 import torch
 import warp as wp
-
-# Register VBD solver factory so AVBD mode is available
-from isaaclab_contrib.deformable import register_hooks as _register_deformable_hooks
-
-_register_deformable_hooks()
 
 from pxr import Gf, UsdGeom
 
@@ -27,17 +22,17 @@ from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.sim.spawners.shapes import SphereCfg, spawn_sphere
 from isaaclab.sim.utils.stage import get_current_stage
 
-from .pick_avbd_rigid_cube_env_cfg import PickAVBDRigidCubeEnvCfg
+from .pick_rigid_cylinder_env_cfg import PickRigidCylinderEnvCfg
 
 logger = logging.getLogger(__name__)
 
 
-class PickAVBDRigidCubeEnv(DirectRLEnv):
-    """Pick-AVBD-Rigid-Cube environment using the unified AVBD solver."""
 
-    cfg: PickAVBDRigidCubeEnvCfg
+class PickRigidCylinderEnv(DirectRLEnv):
+    cfg: PickRigidCylinderEnvCfg
 
-    def __init__(self, cfg: PickAVBDRigidCubeEnvCfg, render_mode: str | None = None, **kwargs):
+    def __init__(self, cfg: PickRigidCylinderEnvCfg, render_mode: str | None = None, **kwargs):
+        # For velocity control, override actuator gains before the robot is spawned
         if cfg.control_mode == "velocity":
             for actuator in cfg.robot_cfg.actuators.values():
                 actuator.stiffness = 0.0
@@ -51,25 +46,27 @@ class PickAVBDRigidCubeEnv(DirectRLEnv):
         self.joint_pos = wp.to_torch(self.robot.data.joint_pos)
         self.joint_vel = wp.to_torch(self.robot.data.joint_vel)
 
+        # Find EE body index for reward computation
         ee_body_idx, _ = self.robot.find_bodies("panda_hand")
         self._ee_body_idx = int(ee_body_idx[0])
 
+        # Keyboard controls (Newton viewer)
         self._request_reset = False
         self._gripper_closed = False
         self._reset_key_registered = False
         self._newton_viewer_gl = None
 
+        # Finger joint indices
         self._finger_joint_idx, _ = self.robot.find_joints(["panda_finger_joint1", "panda_finger_joint2"])
 
+        # Optional interactive IK
         self._ik_available = False
         if cfg.interactive_ik:
             self._setup_interactive_ik()
 
         logger.info(
-            "PickAVBDRigidCubeEnv: control_mode=%s, action_scale=%s, interactive_ik=%s",
-            self.cfg.control_mode,
-            cfg.action_scale,
-            self._ik_available,
+            "PickRigidCylinderEnv: control_mode=%s, action_scale=%s, interactive_ik=%s",
+            self.cfg.control_mode, cfg.action_scale, self._ik_available,
         )
 
     _SPHERE_PRIM_PATH = "/World/ik_target"
@@ -83,7 +80,7 @@ class PickAVBDRigidCubeEnv(DirectRLEnv):
 
             newton_model = NewtonManager._model
             if newton_model is None:
-                logger.info("[PickAVBDRigidCubeEnv] Newton model not available; IK disabled.")
+                logger.info("[PickRigidCylinderEnv] Newton model not available; IK disabled.")
                 return
 
             ee_body_idx, _ = self.robot.find_bodies("panda_hand")
@@ -96,13 +93,8 @@ class PickAVBDRigidCubeEnv(DirectRLEnv):
 
             ik_state = newton_model.state()
             newton.eval_fk(newton_model, newton_model.joint_q, newton_model.joint_qd, ik_state)
-            # Original: initialize from FK default pose
-            # self._ee_tf = wp.transform(*body_q_np[self._ee_ik_index])
-            # Initialize IK target to a pre-grasp pose above the cube
-            self._ee_tf = wp.transform(
-                wp.vec3(0.3022, 0.0000, 0.1257),
-                wp.quat(0.9654, 0.0214, -0.2598, -0.0058),
-            )
+            body_q_np = ik_state.body_q.numpy()
+            self._ee_tf = wp.transform(*body_q_np[self._ee_ik_index])
             ee_pos = wp.transform_get_translation(self._ee_tf)
 
             ee_rot = wp.transform_get_rotation(self._ee_tf)
@@ -132,7 +124,16 @@ class PickAVBDRigidCubeEnv(DirectRLEnv):
             self._newton_model = newton_model
             self._ik_available = True
             self._newton_viewer_gl = None
-            logger.info("[PickAVBDRigidCubeEnv] Newton IK initialized (EE index=%d)", self._ee_ik_index)
+
+            if "cuda" in str(NewtonManager._device):
+                with wp.ScopedCapture() as capture:
+                    self._ik_solver.step(self._ik_joint_q, self._ik_joint_q, iterations=24)
+                self._ik_graph = capture.graph
+                logger.info("[PickRigidCylinderEnv] IK CUDA graph captured")
+            else:
+                self._ik_graph = None
+
+            logger.info("[PickRigidCylinderEnv] Newton IK initialized (EE index=%d)", self._ee_ik_index)
 
             self._stage = get_current_stage()
             spawn_sphere(
@@ -145,7 +146,7 @@ class PickAVBDRigidCubeEnv(DirectRLEnv):
             )
             self._sphere_prim = self._stage.GetPrimAtPath(self._SPHERE_PRIM_PATH)
         except Exception as exc:
-            logger.info("[PickAVBDRigidCubeEnv] IK not available: %s", exc)
+            logger.info("[PickRigidCylinderEnv] IK not available: %s", exc)
 
     def _apply_ik_action(self):
         """Read gizmo target, solve IK, and set joint position targets."""
@@ -172,9 +173,9 @@ class PickAVBDRigidCubeEnv(DirectRLEnv):
                     _v.log_gizmo("ik_target", _t)
 
                 self._newton_viewer_gl.begin_frame = _begin_frame_with_gizmo
-                logger.info("[PickAVBDRigidCubeEnv] Newton viewer gizmo registered")
+                logger.info("[PickRigidCylinderEnv] Newton viewer gizmo registered")
             else:
-                logger.warning("[PickAVBDRigidCubeEnv] NewtonViewerGL not found in sim.visualizers")
+                logger.warning("[PickRigidCylinderEnv] NewtonViewerGL not found in sim.visualizers")
 
         if self._newton_viewer_gl is not None:
             device = self._newton_viewer_gl.device
@@ -186,21 +187,13 @@ class PickAVBDRigidCubeEnv(DirectRLEnv):
                 colors=wp.array([wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3, device=device),
             )
 
-        target_pos = wp.transform_get_translation(self._ee_tf)
-
-        if not hasattr(self, "_ik_print_count"):
-            self._ik_print_count = 0
-        self._ik_print_count += 1
-        if self._ik_print_count % 60 == 0:
-            target_rot = wp.transform_get_rotation(self._ee_tf)
-            print(f"[IK Target] pos=({float(target_pos[0]):.4f}, {float(target_pos[1]):.4f}, {float(target_pos[2]):.4f}) "
-                  f"quat=({float(target_rot[0]):.4f}, {float(target_rot[1]):.4f}, {float(target_rot[2]):.4f}, {float(target_rot[3]):.4f})")
-
-        xform = UsdGeom.Xformable(self._sphere_prim)
-        for op in xform.GetOrderedXformOps():
-            if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
-                op.Set(Gf.Vec3d(float(target_pos[0]), float(target_pos[1]), float(target_pos[2])))
-                break
+        if self.sim.has_gui:
+            target_pos = wp.transform_get_translation(self._ee_tf)
+            xform = UsdGeom.Xformable(self._sphere_prim)
+            for op in xform.GetOrderedXformOps():
+                if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
+                    op.Set(Gf.Vec3d(float(target_pos[0]), float(target_pos[1]), float(target_pos[2])))
+                    break
 
         current_q = wp.to_torch(self.robot.data.joint_pos)[0]
         ik_q_torch = wp.to_torch(self._ik_joint_q)
@@ -210,7 +203,10 @@ class PickAVBDRigidCubeEnv(DirectRLEnv):
         self._pos_obj.set_target_position(0, wp.transform_get_translation(self._ee_tf))
         ee_rot = wp.transform_get_rotation(self._ee_tf)
         self._rot_obj.set_target_rotation(0, ee_rot)
-        self._ik_solver.step(self._ik_joint_q, self._ik_joint_q, iterations=24)
+        if self._ik_graph is not None:
+            wp.capture_launch(self._ik_graph)
+        else:
+            self._ik_solver.step(self._ik_joint_q, self._ik_joint_q, iterations=24)
 
         solved_arm_q = wp.to_torch(self._ik_joint_q)[0, self._arm_joint_idx]
         self.robot.set_joint_position_target_index(target=solved_arm_q.unsqueeze(0), joint_ids=self._arm_joint_idx)
@@ -218,9 +214,7 @@ class PickAVBDRigidCubeEnv(DirectRLEnv):
 
     def _apply_finger_targets(self):
         """Set finger joint targets based on gripper state (G key toggle)."""
-        # Cube is 5cm wide → half-width 0.025m per finger. Target slightly
-        # inside the surface for a gentle squeeze, not a bulldoze.
-        finger_pos = 0.008 if self._gripper_closed else 0.04
+        finger_pos = 0.0 if self._gripper_closed else 0.04
         finger_target = torch.full(
             (self.num_envs, len(self._finger_joint_idx)),
             finger_pos,
@@ -230,6 +224,7 @@ class PickAVBDRigidCubeEnv(DirectRLEnv):
         self.robot.set_joint_position_target_index(target=finger_target, joint_ids=self._finger_joint_idx)
 
     def _try_find_viewer_for_reset_key(self):
+        """Lazily find Newton viewer and register R-key reset (non-IK path)."""
         if self._reset_key_registered:
             return
         try:
@@ -244,6 +239,7 @@ class PickAVBDRigidCubeEnv(DirectRLEnv):
             pass
 
     def _register_reset_key(self):
+        """Register R key to trigger environment reset in Newton viewer."""
         if self._reset_key_registered or self._newton_viewer_gl is None:
             return
         import pyglet.window.key as key
@@ -251,18 +247,18 @@ class PickAVBDRigidCubeEnv(DirectRLEnv):
         def _on_key(symbol, modifiers, _self=self):
             if symbol == key.R:
                 _self._request_reset = True
-                print("[PickAVBDRigidCubeEnv] Reset requested via R key")
+                logger.info("[PickRigidCylinderEnv] Reset requested via R key")
             elif symbol == key.G:
                 _self._gripper_closed = not _self._gripper_closed
-                print(f"[PickAVBDRigidCubeEnv] Gripper {'closed' if _self._gripper_closed else 'open'} via G key")
+                logger.info("[PickRigidCylinderEnv] Gripper %s via G key", "closed" if _self._gripper_closed else "open")
 
         self._newton_viewer_gl.renderer.register_key_press(_on_key)
         self._reset_key_registered = True
-        logger.info("[PickAVBDRigidCubeEnv] R key (reset) and G key (gripper toggle) registered")
+        logger.info("[PickRigidCylinderEnv] R key (reset) and G key (gripper toggle) registered")
 
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot_cfg)
-        self.cube = RigidObject(self.cfg.cube)
+        self.cylinder = RigidObject(self.cfg.cylinder)
 
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
 
@@ -270,61 +266,17 @@ class PickAVBDRigidCubeEnv(DirectRLEnv):
         light_cfg.func("/World/Light", light_cfg)
 
         self.scene.clone_environments(copy_from_source=False)
+        if "physx" in self.scene.physics_backend:
+            self.scene.filter_collisions(global_prim_paths=["/World/ground"])
         self.scene.articulations["robot"] = self.robot
-        self.scene.rigid_objects["cube"] = self.cube
+        self.scene.rigid_objects["cylinder"] = self.cylinder
 
-        # AVBD requires body coloring for Gauss-Seidel. Register a MODEL_INIT
-        # callback to call builder.color() before finalization.
-        from isaaclab_newton.physics import NewtonManager
-        from isaaclab.physics import PhysicsEvent
-
-        def _color_builder(payload=None):
-            builder = NewtonManager._builder
-            if builder is not None:
-                builder.color()
-
-        NewtonManager.register_callback(_color_builder, PhysicsEvent.MODEL_INIT)
-
-        if self.cfg.disable_robot_ground_collision:
-            self._register_ground_collision_disable()
-
-    def _register_ground_collision_disable(self):
-        from isaaclab_newton.physics import NewtonManager
-        from isaaclab.physics import PhysicsEvent
-
-        def _disable(payload=None):
-            model = NewtonManager._model
-            if model is None:
-                return
-            labels = list(model.shape_label)
-            groups = model.shape_collision_group.numpy()
-            for i, label in enumerate(labels):
-                if "ground" in label.lower() or "defaultgroundplane" in label.lower():
-                    groups[i] = 0
-            model.shape_collision_group.assign(wp.array(groups, dtype=int, device=model.shape_collision_group.device))
-            logger.info(
-                "Disabled ground-robot collision for shapes: %s",
-                [labels[i] for i, g in enumerate(groups) if g == 0],
-            )
-
-        NewtonManager.register_callback(_disable, PhysicsEvent.PHYSICS_READY)
+    # ─── RL interface ────────────────────────────────────────────────────────
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self.actions = actions.clone()
 
     def _apply_action(self) -> None:
-        # After arm converges to pre-grasp, trigger a full env reset so
-        # the cube returns to its initial position (it gets pushed during
-        # the arm's initial sweep to the IK target).
-        if not hasattr(self, "_arm_settled"):
-            self._arm_settled = False
-            self._settle_counter = 0
-        if not self._arm_settled:
-            self._settle_counter += 1
-            if self._settle_counter >= 100:
-                self._arm_settled = True
-                self._request_reset = True
-
         if not self._reset_key_registered and not self._ik_available:
             self._try_find_viewer_for_reset_key()
 
@@ -340,35 +292,37 @@ class PickAVBDRigidCubeEnv(DirectRLEnv):
         self._apply_finger_targets()
 
     def _get_observations(self) -> dict:
-        self.cube.update(self.step_dt)
+        self.cylinder.update(self.step_dt)
 
-        # Cube position from rigid body root state
-        cube_pos = wp.to_torch(self.cube.data.root_pos_w)  # (num_envs, 3)
-        self._cube_pos = cube_pos
-        self._object_pos = cube_pos
+        # Cylinder position from rigid body root state
+        self._cylinder_pos = wp.to_torch(self.cylinder.data.root_pos_w)  # (num_envs, 3)
+        self._object_pos = self._cylinder_pos
 
         obs = torch.cat(
             (
-                self.joint_pos[:, self._arm_joint_idx],
-                self.joint_vel[:, self._arm_joint_idx],
-                cube_pos,
+                self.joint_pos[:, self._arm_joint_idx],  # (num_envs, 7)
+                self.joint_vel[:, self._arm_joint_idx],  # (num_envs, 7)
+                self._cylinder_pos,                      # (num_envs, 3)
             ),
             dim=-1,
         )
         return {"policy": obs}
 
     def _get_rewards(self) -> torch.Tensor:
-        cube_height = self._cube_pos[:, 2]
-        rew_cube_height = self.cfg.rew_scale_cube_height * cube_height
+        # Cylinder height reward
+        cylinder_height = self._cylinder_pos[:, 2]
+        rew_cylinder_height = self.cfg.rew_scale_cylinder_height * cylinder_height
 
+        # EE-to-cylinder distance penalty
         ee_pos = wp.to_torch(self.robot.data.body_pos_w)[:, self._ee_body_idx]
-        ee_cube_dist = torch.norm(ee_pos - self._cube_pos, dim=-1)
-        rew_ee_cube_dist = self.cfg.rew_scale_ee_cube_dist * ee_cube_dist
+        ee_cylinder_dist = torch.norm(ee_pos - self._cylinder_pos, dim=-1)
+        rew_ee_cylinder_dist = self.cfg.rew_scale_ee_cylinder_dist * ee_cylinder_dist
 
+        # Joint velocity penalty
         rew_joint_vel = self.cfg.rew_scale_joint_vel * torch.sum(
             torch.abs(self.joint_vel[:, self._arm_joint_idx]), dim=-1
         )
-        return rew_cube_height + rew_ee_cube_dist + rew_joint_vel
+        return rew_cylinder_height + rew_ee_cylinder_dist + rew_joint_vel
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         self.joint_pos = wp.to_torch(self.robot.data.joint_pos)
@@ -388,6 +342,7 @@ class PickAVBDRigidCubeEnv(DirectRLEnv):
             return
         super()._reset_idx(env_ids)
 
+        # Reset robot
         joint_pos = wp.to_torch(self.robot.data.default_joint_pos)[env_ids].clone()
         joint_vel = wp.to_torch(self.robot.data.default_joint_vel)[env_ids].clone()
 
@@ -403,43 +358,10 @@ class PickAVBDRigidCubeEnv(DirectRLEnv):
         self.robot.write_joint_position_to_sim_index(position=joint_pos, env_ids=env_ids)
         self.robot.write_joint_velocity_to_sim_index(velocity=joint_vel, env_ids=env_ids)
 
-        self._reset_cube(env_ids)
+        # Reset cylinder
+        cylinder_root_pose = wp.to_torch(self.cylinder.data.default_root_pose)[env_ids].clone()
+        cylinder_root_pose[:, :3] += self.scene.env_origins[env_ids]
+        cylinder_root_vel = wp.to_torch(self.cylinder.data.default_root_vel)[env_ids].clone()
 
-    def _reset_cube(self, env_ids):
-        """Reset cube position, velocity, joint_q, and solver state."""
-        from isaaclab_newton.physics import NewtonManager
-
-        cube_default_state = wp.to_torch(self.cube.data.default_root_state)[env_ids].clone()
-        cube_default_state[:, :3] += self.scene.env_origins[env_ids]
-        self.cube.write_root_pose_to_sim_index(root_pose=cube_default_state[:, :7], env_ids=env_ids)
-        self.cube.write_root_velocity_to_sim_index(root_velocity=cube_default_state[:, 7:], env_ids=env_ids)
-
-        # Write FREE joint coords so eval_fk produces correct body_q.
-        model = NewtonManager._model
-        cube_pose = cube_default_state[0, :7].cpu().numpy()
-        if not hasattr(self, "_cube_body_idx"):
-            self._cube_body_idx = None
-            self._cube_q_start = None
-            self._cube_qd_start = None
-            for ji in range(model.joint_count):
-                child = model.joint_child.numpy()[ji]
-                if "cube" in list(model.body_label)[child].lower():
-                    self._cube_body_idx = child
-                    self._cube_q_start = int(model.joint_q_start.numpy()[ji])
-                    self._cube_qd_start = int(model.joint_qd_start.numpy()[ji])
-                    break
-        if self._cube_body_idx is not None:
-            bi = self._cube_body_idx
-            qs = self._cube_q_start
-            qds = self._cube_qd_start
-            for st in (NewtonManager._state_0, NewtonManager._state_1):
-                if st is None:
-                    continue
-                jq = st.joint_q.numpy(); jq[qs:qs + 7] = cube_pose
-                st.joint_q.assign(wp.array(jq, dtype=float, device=st.joint_q.device))
-                jqd = st.joint_qd.numpy(); jqd[qds:qds + 6] = 0.0
-                st.joint_qd.assign(wp.array(jqd, dtype=float, device=st.joint_qd.device))
-            solver = NewtonManager._solver
-            if hasattr(solver, "body_q_prev") and solver.body_q_prev is not None:
-                bqp = solver.body_q_prev.numpy(); bqp[bi] = cube_pose
-                solver.body_q_prev.assign(wp.array(bqp, dtype=wp.transformf, device=solver.body_q_prev.device))
+        self.cylinder.write_root_pose_to_sim_index(root_pose=cylinder_root_pose, env_ids=env_ids)
+        self.cylinder.write_root_velocity_to_sim_index(root_velocity=cylinder_root_vel, env_ids=env_ids)

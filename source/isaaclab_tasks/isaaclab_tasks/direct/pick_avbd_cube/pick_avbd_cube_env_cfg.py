@@ -27,12 +27,12 @@ from isaaclab_assets.robots.franka import FRANKA_PANDA_CFG, FRANKA_PANDA_HIGH_PD
 # that H ≈ ke + kd * ke / dt ≈ 400 + 2400 = 2800, allowing drives to
 # converge within ~10 iterations.
 FRANKA_PANDA_AVBD_CFG = FRANKA_PANDA_HIGH_PD_CFG.copy()
-FRANKA_PANDA_AVBD_CFG.actuators["panda_shoulder"].stiffness = 1e4
-FRANKA_PANDA_AVBD_CFG.actuators["panda_shoulder"].damping = 1.0
-FRANKA_PANDA_AVBD_CFG.actuators["panda_forearm"].stiffness = 1e4
-FRANKA_PANDA_AVBD_CFG.actuators["panda_forearm"].damping = 1.0
-FRANKA_PANDA_AVBD_CFG.actuators["panda_hand"].stiffness = 2e3
-FRANKA_PANDA_AVBD_CFG.actuators["panda_hand"].damping = 1.0
+FRANKA_PANDA_AVBD_CFG.actuators["panda_shoulder"].stiffness = 1e6
+FRANKA_PANDA_AVBD_CFG.actuators["panda_shoulder"].damping = 0.1
+FRANKA_PANDA_AVBD_CFG.actuators["panda_forearm"].stiffness = 1e6
+FRANKA_PANDA_AVBD_CFG.actuators["panda_forearm"].damping = 0.1
+FRANKA_PANDA_AVBD_CFG.actuators["panda_hand"].stiffness = 1e4
+FRANKA_PANDA_AVBD_CFG.actuators["panda_hand"].damping = 0.1
 FRANKA_PANDA_AVBD_CFG.spawn.rigid_props.disable_gravity = False
 
 
@@ -49,12 +49,12 @@ class DeformableNewtonCfg(NewtonCfg):
 
 
 MODEL_CFG = NewtonModelCfg(
-    soft_contact_ke=1e3,
-    soft_contact_kd=100.0,
-    soft_contact_mu=0.5,
-    shape_material_ke=1e3,
-    shape_material_kd=100.0,
-    shape_material_mu=0.5,
+    soft_contact_ke=1e4,
+    soft_contact_kd=1.0,
+    soft_contact_mu=1.5,
+    shape_material_ke=1e4,
+    shape_material_kd=1.0,
+    shape_material_mu=1.5,
 )
 
 
