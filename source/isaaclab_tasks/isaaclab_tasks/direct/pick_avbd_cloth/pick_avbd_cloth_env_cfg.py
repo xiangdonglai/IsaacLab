@@ -3,13 +3,14 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Configuration for the Pick-Cloth environment: Franka robot + cloth with coupled solver."""
+"""Configuration for the Pick-AVBD-Cloth environment: Franka robot + cloth, all via unified AVBD solver."""
 
 import importlib.util
 import os.path
 
-from isaaclab_contrib.deformable.newton_manager_cfg import CoupledSolverCfg, NewtonModelCfg, VBDSolverCfg
-from isaaclab_newton.physics import FeatherstoneSolverCfg, MJWarpSolverCfg, NewtonCfg
+from isaaclab_contrib.deformable.newton_manager_cfg import NewtonModelCfg, VBDSolverCfg
+from isaaclab_newton.physics import NewtonCfg
+from isaaclab_newton.physics.newton_collision_cfg import NewtonCollisionPipelineCfg
 from isaaclab_visualizers.newton import NewtonVisualizerCfg
 
 import isaaclab.sim as sim_utils
@@ -21,7 +22,7 @@ from isaaclab.utils import configclass
 
 from isaaclab_tasks.utils import PresetCfg, preset
 
-from isaaclab_assets.robots.franka import FRANKA_PANDA_CFG, FRANKA_PANDA_HIGH_PD_CFG
+from isaaclab_assets.robots.franka import FRANKA_PANDA_HIGH_PD_CFG
 
 # Locate shirt USD from Newton package (defer import to avoid pxr before SimulationApp).
 _newton_spec = importlib.util.find_spec("newton")
@@ -32,13 +33,20 @@ _SHIRT_USD = os.path.join(
     "unisex_shirt.usd",
 )
 
-@configclass
-class DeformableNewtonCfg(NewtonCfg):
-    """NewtonCfg extended with model-level contact parameters for deformable objects.
+# AVBD-specific Franka config: high stiffness for ALM joints
+FRANKA_PANDA_AVBD_CFG = FRANKA_PANDA_HIGH_PD_CFG.copy()
+FRANKA_PANDA_AVBD_CFG.actuators["panda_shoulder"].stiffness = 1e6
+FRANKA_PANDA_AVBD_CFG.actuators["panda_shoulder"].damping = 0.01
+FRANKA_PANDA_AVBD_CFG.actuators["panda_forearm"].stiffness = 1e6
+FRANKA_PANDA_AVBD_CFG.actuators["panda_forearm"].damping = 0.01
+FRANKA_PANDA_AVBD_CFG.actuators["panda_hand"].stiffness = 1e6
+FRANKA_PANDA_AVBD_CFG.actuators["panda_hand"].damping = 0.1
+FRANKA_PANDA_AVBD_CFG.spawn.rigid_props.disable_gravity = False
 
-    Uses a distinct class name so that ``_is_kitless_physics`` does not
-    match it, ensuring Kit is launched for USD deformable spawning.
-    """
+
+@configclass
+class ClothAVBDNewtonCfg(NewtonCfg):
+    """NewtonCfg subclass — distinct name ensures Kit is launched for USD spawning."""
 
     model_cfg: NewtonModelCfg | None = None
     """Global Newton model parameters applied after builder finalization."""
@@ -47,85 +55,56 @@ class DeformableNewtonCfg(NewtonCfg):
 MODEL_CFG = NewtonModelCfg(
     soft_contact_ke=1e4,
     soft_contact_kd=1e-2,
-    soft_contact_mu=0.5,
+    soft_contact_mu=1.5,
+    shape_material_ke=1e4,
+    shape_material_kd=1.0,
+    shape_material_mu=1.5,
 )
 
 
 @configclass
-class PickClothPhysicsCfg(PresetCfg):
-    """Physics presets for the Pick-Cloth environment.
+class PickAVBDClothPhysicsCfg(PresetCfg):
+    """Physics presets for AVBD cloth picking (unified rigid + cloth AVBD solver)."""
 
-    Presets:
-        - ``default`` / ``newton`` / ``newton_mjwarp``: MuJoCo Warp rigid solver + VBD cloth (recommended).
-        - ``newton_featherstone``: Featherstone rigid solver + VBD cloth.
-        - ``cloth_only``: VBD cloth only, no rigid-body solver.
-    """
-
-    default: DeformableNewtonCfg = DeformableNewtonCfg(
-        solver_cfg=CoupledSolverCfg(
-            rigid_solver_cfg=MJWarpSolverCfg(
-                njmax=40,
-                nconmax=20,
-                ls_iterations=20,
-                cone="pyramidal",
-                impratio=1,
-                ls_parallel=False,
-                integrator="implicitfast",
-                ccd_iterations=100,
-            ),
-            vbd_cfg=VBDSolverCfg(
-                iterations=5,
-                particle_enable_self_contact=True,
-                particle_self_contact_radius=2e-3,  # good for substeps=10
-                particle_self_contact_margin=2e-3,
-                particle_topological_contact_filter_threshold=1,
-                particle_rest_shape_contact_exclusion_radius=0.0,
-                particle_vertex_contact_buffer_size=16,
-                particle_edge_contact_buffer_size=20,
-                particle_collision_detection_interval=-1,
-                integrate_with_external_rigid_solver=True,
-            ),
+    default: ClothAVBDNewtonCfg = ClothAVBDNewtonCfg(
+        solver_cfg=VBDSolverCfg(
+            iterations=10,
+            integrate_with_external_rigid_solver=False,
+            particle_enable_self_contact=True,
+            particle_self_contact_radius=2e-3,  # good for substeps=10
+            particle_self_contact_margin=2e-3,
+            particle_topological_contact_filter_threshold=1,
+            particle_rest_shape_contact_exclusion_radius=0.0,
+            particle_vertex_contact_buffer_size=16,
+            particle_edge_contact_buffer_size=20,
+            particle_collision_detection_interval=-1,
+            rigid_contact_k_start=1.0e2,
+            rigid_avbd_beta=1.0e5,
+            rigid_avbd_gamma=0.99,
+            rigid_joint_linear_k_start=1.0e4,
+            rigid_joint_angular_k_start=1.0e1,
+            rigid_joint_linear_ke=1.0e9,
+            rigid_joint_angular_ke=1.0e9,
+            rigid_joint_linear_kd=1.0e-2,
+            rigid_joint_angular_kd=0.0,
+        ),
+        collision_cfg=NewtonCollisionPipelineCfg(
             soft_contact_margin=0.01,
-            coupling_mode="two_way",
         ),
         model_cfg=MODEL_CFG,
         num_substeps=10,
         use_cuda_graph=True,
     )
 
-    newton: DeformableNewtonCfg = default
-    newton_mjwarp: DeformableNewtonCfg = default
-
-    newton_featherstone: DeformableNewtonCfg = DeformableNewtonCfg(
-        solver_cfg=CoupledSolverCfg(
-            rigid_solver_cfg=FeatherstoneSolverCfg(),
-            vbd_cfg=VBDSolverCfg(
-                iterations=5,
-                particle_enable_self_contact=True,
-                particle_self_contact_radius=1e-4,
-                particle_self_contact_margin=2e-3,
-                particle_topological_contact_filter_threshold=1,
-                particle_rest_shape_contact_exclusion_radius=0.0,
-                particle_vertex_contact_buffer_size=16,
-                particle_edge_contact_buffer_size=20,
-                particle_collision_detection_interval=-1,
-                integrate_with_external_rigid_solver=True,
-            ),
-            soft_contact_margin=0.01,
-        ),
-        model_cfg=MODEL_CFG,
-        num_substeps=30,
-        use_cuda_graph=True,
-    )
+    newton: ClothAVBDNewtonCfg = default
 
 
 @configclass
-class PickClothEnvCfg(DirectRLEnvCfg):
+class PickAVBDClothEnvCfg(DirectRLEnvCfg):
     # env
     decimation = 2
     episode_length_s = 5.0
-    # With robot: obs = joint_pos(7) + joint_vel(7) + cloth_centroid(3) = 17, act = 7
-    # Without robot (robot_cfg=None): obs = cloth_centroid(3) = 3, act = 0
+    # obs = joint_pos(7) + joint_vel(7) + cloth_centroid(3) = 17, act = 7
     action_space = 7
     observation_space = 17
     state_space = 0
@@ -134,7 +113,7 @@ class PickClothEnvCfg(DirectRLEnvCfg):
     sim: SimulationCfg = SimulationCfg(
         dt=1 / 60,
         render_interval=decimation,
-        physics=PickClothPhysicsCfg(),
+        physics=PickAVBDClothPhysicsCfg(),
         visualizer_cfgs=NewtonVisualizerCfg(),
     )
 
@@ -145,11 +124,10 @@ class PickClothEnvCfg(DirectRLEnvCfg):
         replicate_physics=True,
     )
 
-    # robot (use presets=cloth_only to run without a robot)
+    # robot
     robot_cfg = preset(
-        default=FRANKA_PANDA_CFG.replace(prim_path="/World/envs/env_.*/Robot"),
-        franka_high_pd=FRANKA_PANDA_HIGH_PD_CFG.replace(prim_path="/World/envs/env_.*/Robot"),
-        cloth_only=None,
+        default=FRANKA_PANDA_AVBD_CFG.replace(prim_path="/World/envs/env_.*/Robot"),
+        franka_high_pd=FRANKA_PANDA_AVBD_CFG.replace(prim_path="/World/envs/env_.*/Robot"),
     )
 
     # joint names to control (7 arm joints, excluding fingers)
@@ -187,7 +165,7 @@ class PickClothEnvCfg(DirectRLEnvCfg):
     )
 
     # disable rigid-body collision between robot and ground plane
-    disable_robot_ground_collision: bool = True
+    disable_robot_ground_collision: bool = False
     """When True, set the ground plane's collision group to 0 in Newton so the
     robot arm does not collide with the ground. Soft (particle) contacts are
     unaffected. Defaults to True."""

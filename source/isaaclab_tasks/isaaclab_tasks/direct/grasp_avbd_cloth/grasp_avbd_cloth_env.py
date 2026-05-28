@@ -156,9 +156,13 @@ class GraspAVBDClothEnv(DirectRLEnv):
             newton.eval_fk(newton_model, newton_model.joint_q, newton_model.joint_qd, ik_state)
             body_q_np = ik_state.body_q.numpy()
             # self._ee_tf = wp.transform(*body_q_np[self._ee_ik_index])
+            # self._ee_tf = wp.transform(
+            #     wp.vec3(0.5277, 0.0000, 0.6101),
+            #     wp.quat(0.8468, 0.0171, 0.5304, 0.0355),
+            # )
             self._ee_tf = wp.transform(
-                wp.vec3(0.5277, 0.0000, 0.6101),
-                wp.quat(0.8468, 0.0171, 0.5304, 0.0355),
+                wp.vec3(0.7056, -0.1461, 0.6028),
+                wp.quat(0.5677, 0.6285, 0.3893, -0.3620),
             )
             ee_pos = wp.transform_get_translation(self._ee_tf)
 
