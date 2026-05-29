@@ -910,7 +910,25 @@ def add_usd_reference(
 
     def _add_reference_to_prim(prim: Usd.Prim) -> Usd.Prim:
         """Helper function to add a reference to a prim."""
-        success_bool = prim.GetReferences().AddReference(usd_path)
+        # USD's AddReference() without an explicit prim path uses the referenced
+        # layer's defaultPrim; when that is missing the reference silently
+        # composes nothing. Fall back to the first child of the pseudo-root so
+        # the referenced content actually appears.
+        ref_stage = Usd.Stage.Open(usd_path)
+        default_prim = ref_stage.GetDefaultPrim() if ref_stage else None
+        if default_prim and default_prim.IsValid():
+            success_bool = prim.GetReferences().AddReference(usd_path)
+        else:
+            ref_prim_path = None
+            if ref_stage:
+                for child in ref_stage.GetPseudoRoot().GetChildren():
+                    ref_prim_path = child.GetPath().pathString
+                    break
+            if ref_prim_path is None:
+                raise RuntimeError(
+                    f"USD file at '{usd_path}' has no defaultPrim and no root-level prims to reference."
+                )
+            success_bool = prim.GetReferences().AddReference(usd_path, ref_prim_path)
         if not success_bool:
             raise RuntimeError(
                 f"Unable to add USD reference to the prim at path: {prim_path} from the USD file at path: {usd_path}"

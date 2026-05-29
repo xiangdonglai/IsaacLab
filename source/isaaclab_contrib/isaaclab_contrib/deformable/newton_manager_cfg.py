@@ -80,6 +80,52 @@ class VBDSolverCfg(NewtonSolverCfg):
     rigid_contact_k_start: float = 1.0e2
     """Initial stiffness seed for all rigid body contacts [N/m]."""
 
+    # ----------------------------------------------------------------------
+    # AVBD rigid integrator parameters.  When ``integrate_with_external_rigid_solver``
+    # is ``False`` VBD integrates rigid bodies via the AVBD algorithm; these
+    # knobs control its stabilization, penalty ramping, and joint constraint
+    # stiffness.  Defaults match upstream ``newton.solvers.SolverVBD``.
+    # ----------------------------------------------------------------------
+
+    rigid_avbd_alpha: float = 0.95
+    """C0 stabilization strength (``C_stab = C - alpha * C0``)."""
+
+    rigid_avbd_joint_alpha: float | None = None
+    """Joint alpha override [dimensionless]. ``None`` uses :attr:`rigid_avbd_alpha`."""
+
+    rigid_avbd_contact_alpha: float | None = None
+    """Body-body contact alpha override [dimensionless]. ``None`` selects default."""
+
+    rigid_avbd_beta: float = 0.0
+    """Penalty ramp rate per iteration. ``0`` disables ramping (fixed-k)."""
+
+    rigid_avbd_linear_beta: float | None = None
+    """Linear beta override. ``None`` uses :attr:`rigid_avbd_beta`."""
+
+    rigid_avbd_angular_beta: float | None = None
+    """Angular beta override. ``None`` uses :attr:`rigid_avbd_beta`."""
+
+    rigid_avbd_gamma: float = 0.999
+    """Per-step decay for penalty ``k`` and persisted hard-mode ``lambda``."""
+
+    rigid_joint_linear_k_start: float = 1.0e4
+    """Linear joint constraint penalty seed when ramping is enabled [N/m]."""
+
+    rigid_joint_angular_k_start: float = 1.0e1
+    """Angular joint constraint penalty seed when ramping is enabled [N*m/rad]."""
+
+    rigid_joint_linear_ke: float = 1.0e5
+    """Penalty stiffness ceiling for structural linear joint constraints [N/m]."""
+
+    rigid_joint_angular_ke: float = 1.0e5
+    """Penalty stiffness ceiling for structural angular joint constraints [N*m/rad]."""
+
+    rigid_joint_linear_kd: float = 0.0
+    """Penalty damping for structural linear joint constraints [N*s/m]."""
+
+    rigid_joint_angular_kd: float = 0.0
+    """Penalty damping for structural angular joint constraints [N*m*s/rad]."""
+
 
 @configclass
 class CoupledMJWarpVBDSolverCfg(NewtonSolverCfg):
