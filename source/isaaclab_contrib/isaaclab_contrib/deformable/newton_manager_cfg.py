@@ -140,6 +140,29 @@ class VBDSolverCfg(NewtonSolverCfg):
     Only used when :attr:`integrate_with_external_rigid_solver` is ``False`` (AVBD mode).
     """
 
+    body_enable_reduced_solve: bool = False
+    """Enable reduced-coordinate projection (RVBD) after each timestep.
+
+    When ``True``, the solver projects the maximal body poses back onto the
+    articulation's kinematic manifold via Gauss-Newton, keeping ``joint_q``
+    consistent and improving stability of articulated robots under high-stiffness
+    PD drives. Only used when :attr:`integrate_with_external_rigid_solver` is
+    ``False`` (AVBD mode).
+    """
+
+    reduced_gn_iterations: int = 3
+    """Number of Gauss-Newton iterations for the reduced-coordinate projection.
+
+    ``0`` uses analytical IK only. Only used when :attr:`body_enable_reduced_solve`
+    is ``True``.
+    """
+
+    reduced_gn_damping: float = 1.0e-6
+    """Levenberg-Marquardt damping for the reduced-coordinate Gauss-Newton solve.
+
+    Only used when :attr:`body_enable_reduced_solve` is ``True``.
+    """
+
 
 @configclass
 class CoupledSolverCfg(NewtonSolverCfg):

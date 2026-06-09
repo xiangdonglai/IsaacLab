@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Pick-AVBD-Cloth: Franka Picks a hanging cloth using the unified AVBD solver."""
+"""Pick-RVBD-Cloth: Franka picks a hanging cloth; robot simulated via reduced-coordinate VBD (RVBD)."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from collections.abc import Sequence
 
 import torch
 import warp as wp
-import numpy as np
 
 from isaaclab_contrib.deformable import register_hooks as _register_deformable_hooks
 
@@ -28,17 +27,17 @@ from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.sim.spawners.shapes import SphereCfg, spawn_sphere
 from isaaclab.sim.utils.stage import get_current_stage
 
-from .pick_avbd_cloth_env_cfg import PickAVBDClothEnvCfg
+from .pick_rvbd_cloth_env_cfg import PickRVBDClothEnvCfg
 
 logger = logging.getLogger(__name__)
 
 
-class PickAVBDClothEnv(DirectRLEnv):
-    """Pick-AVBD-Cloth environment: Franka + hanging cloth via AVBD solver."""
+class PickRVBDClothEnv(DirectRLEnv):
+    """Pick-RVBD-Cloth environment: Franka + hanging cloth via reduced-coordinate VBD solver."""
 
-    cfg: PickAVBDClothEnvCfg
+    cfg: PickRVBDClothEnvCfg
 
-    def __init__(self, cfg: PickAVBDClothEnvCfg, render_mode: str | None = None, **kwargs):
+    def __init__(self, cfg: PickRVBDClothEnvCfg, render_mode: str | None = None, **kwargs):
         if cfg.control_mode == "velocity":
             for actuator in cfg.robot_cfg.actuators.values():
                 actuator.stiffness = 0.0
@@ -66,11 +65,8 @@ class PickAVBDClothEnv(DirectRLEnv):
         if cfg.interactive_ik:
             self._setup_interactive_ik()
 
-        # Pin the top two corners of the cloth as kinematic targets
-        # self._setup_cloth_pinning()
-
         logger.info(
-            "PickAVBDClothEnv: control_mode=%s, action_scale=%s, interactive_ik=%s",
+            "PickRVBDClothEnv: control_mode=%s, action_scale=%s, interactive_ik=%s",
             self.cfg.control_mode,
             cfg.action_scale,
             self._ik_available,
@@ -87,7 +83,7 @@ class PickAVBDClothEnv(DirectRLEnv):
 
             newton_model = NewtonManager._model
             if newton_model is None:
-                logger.info("[PickAVBDClothEnv] Newton model not available; IK disabled.")
+                logger.info("[PickRVBDClothEnv] Newton model not available; IK disabled.")
                 return
 
             ee_body_idx, _ = self.robot.find_bodies("panda_hand")
@@ -100,16 +96,13 @@ class PickAVBDClothEnv(DirectRLEnv):
 
             ik_state = newton_model.state()
             newton.eval_fk(newton_model, newton_model.joint_q, newton_model.joint_qd, ik_state)
-            body_q_np = ik_state.body_q.numpy()
-            self._ee_tf = wp.transform(*body_q_np[self._ee_ik_index])
-            # self._ee_tf = wp.transform(
-            #     wp.vec3(0.5277, 0.0000, 0.6101),
-            #     wp.quat(0.8468, 0.0171, 0.5304, 0.0355),
-            # )
+            # Fixed IK target (specified numerical pose). Mark as already captured
+            # so the lazy default-pose capture in _apply_ik_action does not override it.
             self._ee_tf = wp.transform(
                 wp.vec3(0.7302, 0.0836, 0.3713),
                 wp.quat(0.7140, -0.6664, -0.0916, 0.1943),
             )
+            self._ik_target_captured = True
             ee_pos = wp.transform_get_translation(self._ee_tf)
             ee_rot = wp.transform_get_rotation(self._ee_tf)
 
@@ -126,6 +119,7 @@ class PickAVBDClothEnv(DirectRLEnv):
             self._joint_limit_obj = ik.IKObjectiveJointLimit(
                 joint_limit_lower=newton_model.joint_limit_lower,
                 joint_limit_upper=newton_model.joint_limit_upper,
+                # weight=1.0,
                 weight=0.0,
             )
 
@@ -139,7 +133,7 @@ class PickAVBDClothEnv(DirectRLEnv):
             self._newton_model = newton_model
             self._ik_available = True
             self._newton_viewer_gl = None
-            logger.info("[PickAVBDClothEnv] Newton IK initialized (EE index=%d)", self._ee_ik_index)
+            logger.info("[PickRVBDClothEnv] Newton IK initialized (EE index=%d)", self._ee_ik_index)
 
             self._stage = get_current_stage()
             spawn_sphere(
@@ -152,10 +146,21 @@ class PickAVBDClothEnv(DirectRLEnv):
             )
             self._sphere_prim = self._stage.GetPrimAtPath(self._SPHERE_PRIM_PATH)
         except Exception as exc:
-            logger.info("[PickAVBDClothEnv] IK not available: %s", exc)
+            logger.info("[PickRVBDClothEnv] IK not available: %s", exc)
 
     def _apply_ik_action(self):
         """Read gizmo target, solve IK, and set joint position targets."""
+        # Capture the IK target from the EE pose at the default joint config on the
+        # first call (the arm has been reset to default by now). Done once so the
+        # user can still drag the gizmo afterwards.
+        if not getattr(self, "_ik_target_captured", True):
+            ee_pose = wp.to_torch(self.robot.data.body_link_pose_w)[0, self._ee_ik_index]
+            self._ee_tf = wp.transform(
+                wp.vec3(float(ee_pose[0]), float(ee_pose[1]), float(ee_pose[2])),
+                wp.quat(float(ee_pose[3]), float(ee_pose[4]), float(ee_pose[5]), float(ee_pose[6])),
+            )
+            self._ik_target_captured = True
+
         if self._newton_viewer_gl is None:
             try:
                 from isaaclab_visualizers.newton import NewtonVisualizer
@@ -179,9 +184,9 @@ class PickAVBDClothEnv(DirectRLEnv):
                     _v.log_gizmo("ik_target", _t)
 
                 self._newton_viewer_gl.begin_frame = _begin_frame_with_gizmo
-                logger.info("[PickAVBDClothEnv] Newton viewer gizmo registered")
+                logger.info("[PickRVBDClothEnv] Newton viewer gizmo registered")
             else:
-                logger.warning("[PickAVBDClothEnv] NewtonViewerGL not found")
+                logger.warning("[PickRVBDClothEnv] NewtonViewerGL not found")
 
         if self._newton_viewer_gl is not None:
             device = self._newton_viewer_gl.device
@@ -194,14 +199,6 @@ class PickAVBDClothEnv(DirectRLEnv):
             )
 
         target_pos = wp.transform_get_translation(self._ee_tf)
-
-        if not hasattr(self, "_ik_print_count"):
-            self._ik_print_count = 0
-        self._ik_print_count += 1
-        if self._ik_print_count % 60 == 0:
-            target_rot = wp.transform_get_rotation(self._ee_tf)
-            print(f"[IK Target] pos=({float(target_pos[0]):.4f}, {float(target_pos[1]):.4f}, {float(target_pos[2]):.4f}) "
-                  f"quat=({float(target_rot[0]):.4f}, {float(target_rot[1]):.4f}, {float(target_rot[2]):.4f}, {float(target_rot[3]):.4f})")
 
         xform = UsdGeom.Xformable(self._sphere_prim)
         for op in xform.GetOrderedXformOps():
@@ -256,14 +253,14 @@ class PickAVBDClothEnv(DirectRLEnv):
         def _on_key(symbol, modifiers, _self=self):
             if symbol == key.R:
                 _self._request_reset = True
-                print("[PickAVBDClothEnv] Reset requested via R key")
+                print("[PickRVBDClothEnv] Reset requested via R key")
             elif symbol == key.G:
                 _self._gripper_closed = not _self._gripper_closed
-                print(f"[PickAVBDClothEnv] Gripper {'closed' if _self._gripper_closed else 'open'} via G key")
+                print(f"[PickRVBDClothEnv] Gripper {'closed' if _self._gripper_closed else 'open'} via G key")
 
         self._newton_viewer_gl.renderer.register_key_press(_on_key)
         self._reset_key_registered = True
-        logger.info("[PickAVBDClothEnv] R key (reset) and G key (gripper toggle) registered")
+        logger.info("[PickRVBDClothEnv] R key (reset) and G key (gripper toggle) registered")
 
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot_cfg)
@@ -278,7 +275,7 @@ class PickAVBDClothEnv(DirectRLEnv):
         self.scene.articulations["robot"] = self.robot
         self.scene.deformable_objects["cloth"] = self.cloth
 
-        # AVBD requires body coloring for Gauss-Seidel
+        # (R)VBD requires body coloring for Gauss-Seidel
         from isaaclab_newton.physics import NewtonManager
         from isaaclab.physics import PhysicsEvent
 
@@ -313,9 +310,6 @@ class PickAVBDClothEnv(DirectRLEnv):
         self.actions = actions.clone()
 
     def _apply_action(self) -> None:
-        # Re-apply cloth pinning each step
-        # self._apply_cloth_pinning()
-
         if not self._reset_key_registered and not self._ik_available:
             self._try_find_viewer_for_reset_key()
 
@@ -392,6 +386,24 @@ class PickAVBDClothEnv(DirectRLEnv):
         self.robot.write_root_velocity_to_sim_index(root_velocity=default_root_vel, env_ids=env_ids)
         self.robot.write_joint_position_to_sim_index(position=joint_pos, env_ids=env_ids)
         self.robot.write_joint_velocity_to_sim_index(velocity=joint_vel, env_ids=env_ids)
+
+        # RVBD: re-sync the reduced-coordinate projector's previous-state buffers
+        # to the reset configuration. Otherwise _joint_q_prev (and body_q_prev)
+        # retain the builder/initial config, and the projection's per-step
+        # position-correction clamp drags the arm back toward that stale config
+        # on the first post-reset steps.
+        from isaaclab_newton.physics import NewtonManager
+
+        self.sim.forward()  # eval_fk so state_0.body_q matches the reset joint_q
+        solver = NewtonManager._solver
+        state0 = NewtonManager._state_0
+        if solver is not None and state0 is not None:
+            jq_prev = getattr(solver, "_joint_q_prev", None)
+            if jq_prev is not None:
+                wp.copy(jq_prev, state0.joint_q)
+            bq_prev = getattr(solver, "body_q_prev", None)
+            if bq_prev is not None and state0.body_q is not None:
+                wp.copy(bq_prev, state0.body_q)
 
         # Reset cloth
         env_ids_list = env_ids.cpu().tolist() if hasattr(env_ids, "cpu") else list(env_ids)

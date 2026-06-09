@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Configuration for the Pick-AVBD-Cloth environment: Franka robot + cloth, all via unified AVBD solver."""
+"""Configuration for the Pick-RVBD-Cloth environment: Franka robot + cloth, robot via reduced-coordinate VBD (RVBD)."""
 
 import importlib.util
 import os.path
@@ -33,19 +33,19 @@ _SHIRT_USD = os.path.join(
     "unisex_shirt.usd",
 )
 
-# AVBD-specific Franka config: high stiffness for ALM joints
-FRANKA_PANDA_AVBD_CFG = FRANKA_PANDA_HIGH_PD_CFG.copy()
-FRANKA_PANDA_AVBD_CFG.actuators["panda_shoulder"].stiffness = 1e6
-FRANKA_PANDA_AVBD_CFG.actuators["panda_shoulder"].damping = 0.01
-FRANKA_PANDA_AVBD_CFG.actuators["panda_forearm"].stiffness = 1e6
-FRANKA_PANDA_AVBD_CFG.actuators["panda_forearm"].damping = 0.01
-FRANKA_PANDA_AVBD_CFG.actuators["panda_hand"].stiffness = 1e6
-FRANKA_PANDA_AVBD_CFG.actuators["panda_hand"].damping = 0.1
-FRANKA_PANDA_AVBD_CFG.spawn.rigid_props.disable_gravity = False
+# RVBD/AVBD-specific Franka config: high stiffness for ALM joints
+FRANKA_PANDA_RVBD_CFG = FRANKA_PANDA_HIGH_PD_CFG.copy()
+FRANKA_PANDA_RVBD_CFG.actuators["panda_shoulder"].stiffness = 1e6
+FRANKA_PANDA_RVBD_CFG.actuators["panda_shoulder"].damping = 0.01
+FRANKA_PANDA_RVBD_CFG.actuators["panda_forearm"].stiffness = 1e6
+FRANKA_PANDA_RVBD_CFG.actuators["panda_forearm"].damping = 0.01
+FRANKA_PANDA_RVBD_CFG.actuators["panda_hand"].stiffness = 1e6
+FRANKA_PANDA_RVBD_CFG.actuators["panda_hand"].damping = 0.1
+FRANKA_PANDA_RVBD_CFG.spawn.rigid_props.disable_gravity = False
 
 
 @configclass
-class ClothAVBDNewtonCfg(NewtonCfg):
+class ClothRVBDNewtonCfg(NewtonCfg):
     """NewtonCfg subclass — distinct name ensures Kit is launched for USD spawning."""
 
     model_cfg: NewtonModelCfg | None = None
@@ -63,10 +63,10 @@ MODEL_CFG = NewtonModelCfg(
 
 
 @configclass
-class PickAVBDClothPhysicsCfg(PresetCfg):
-    """Physics presets for AVBD cloth picking (unified rigid + cloth AVBD solver)."""
+class PickRVBDClothPhysicsCfg(PresetCfg):
+    """Physics presets for RVBD cloth picking (unified rigid + cloth VBD with reduced-coordinate projection)."""
 
-    default: ClothAVBDNewtonCfg = ClothAVBDNewtonCfg(
+    default: ClothRVBDNewtonCfg = ClothRVBDNewtonCfg(
         solver_cfg=VBDSolverCfg(
             iterations=10,
             integrate_with_external_rigid_solver=False,
@@ -87,6 +87,10 @@ class PickAVBDClothPhysicsCfg(PresetCfg):
             rigid_joint_angular_ke=1.0e9,
             rigid_joint_linear_kd=1.0e-2,
             rigid_joint_angular_kd=0.0,
+            # Reduced-coordinate projection (RVBD) for the articulated robot.
+            body_enable_reduced_solve=True,
+            reduced_gn_iterations=2,
+            reduced_gn_damping=1.0e-6,
         ),
         collision_cfg=NewtonCollisionPipelineCfg(
             soft_contact_margin=0.01,
@@ -96,11 +100,11 @@ class PickAVBDClothPhysicsCfg(PresetCfg):
         use_cuda_graph=True,
     )
 
-    newton: ClothAVBDNewtonCfg = default
+    newton: ClothRVBDNewtonCfg = default
 
 
 @configclass
-class PickAVBDClothEnvCfg(DirectRLEnvCfg):
+class PickRVBDClothEnvCfg(DirectRLEnvCfg):
     # env
     decimation = 2
     episode_length_s = 5.0
@@ -113,7 +117,7 @@ class PickAVBDClothEnvCfg(DirectRLEnvCfg):
     sim: SimulationCfg = SimulationCfg(
         dt=1 / 60,
         render_interval=decimation,
-        physics=PickAVBDClothPhysicsCfg(),
+        physics=PickRVBDClothPhysicsCfg(),
         visualizer_cfgs=NewtonVisualizerCfg(),
     )
 
@@ -126,8 +130,8 @@ class PickAVBDClothEnvCfg(DirectRLEnvCfg):
 
     # robot
     robot_cfg = preset(
-        default=FRANKA_PANDA_AVBD_CFG.replace(prim_path="/World/envs/env_.*/Robot"),
-        franka_high_pd=FRANKA_PANDA_AVBD_CFG.replace(prim_path="/World/envs/env_.*/Robot"),
+        default=FRANKA_PANDA_RVBD_CFG.replace(prim_path="/World/envs/env_.*/Robot"),
+        franka_high_pd=FRANKA_PANDA_RVBD_CFG.replace(prim_path="/World/envs/env_.*/Robot"),
     )
 
     # joint names to control (7 arm joints, excluding fingers)
@@ -159,7 +163,7 @@ class PickAVBDClothEnvCfg(DirectRLEnvCfg):
             ),
         ),
         init_state=DeformableObjectCfg.InitialStateCfg(
-            pos=(0.50, 1.25, 0.10),  # in front of robot, reachable height
+            pos=(0.5, 1.25, 0.10),  # in front of robot, reachable height
             rot=(1.0, 0.0, 0.0, 0.0),
         ),
     )
