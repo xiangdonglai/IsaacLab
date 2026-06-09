@@ -92,10 +92,13 @@ class PickProxyClothEnv(DirectRLEnv):
 
             ik_state = newton_model.state()
             newton.eval_fk(newton_model, newton_model.joint_q, newton_model.joint_qd, ik_state)
-            # Preset initial gizmo target — pose for hovering over the shirt
-            # (matches the AVBD task's default).
+            # ee_pose = wp.to_torch(self.robot.data.body_link_pose_w)[0, self._ee_ik_index]
+            # self._ee_tf = wp.transform(
+            #     wp.vec3(float(ee_pose[0]), float(ee_pose[1]), float(ee_pose[2])),
+            #     wp.quat(float(ee_pose[3]), float(ee_pose[4]), float(ee_pose[5]), float(ee_pose[6])),
+            # )
             self._ee_tf = wp.transform(
-                wp.vec3(0.7302, 0.0836, 0.3713),
+                wp.vec3(0.602, 0.2036, 0.3713),
                 wp.quat(0.7140, -0.6664, -0.0916, 0.1943),
             )
             ee_pos = wp.transform_get_translation(self._ee_tf)
@@ -362,12 +365,49 @@ class PickProxyClothEnv(DirectRLEnv):
             time_out = torch.ones_like(time_out)
             self._request_reset = False
 
+        # Follow-up reset for the stable-contact-reset bug — see
+        # _reset_idx for context.
+        if getattr(self, "_pending_followup_reset", False):
+            time_out = torch.ones_like(time_out)
+            self._pending_followup_reset = False
+
         terminated = torch.zeros_like(time_out)
         return terminated, time_out
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
         if env_ids is None or len(env_ids) == 0:
             return
+
+        # Reset-from-stable-contact bug: when the pre-reset arm is in
+        # mature/stable cloth contact (high scon, no NaN), the post-reset
+        # sim step explodes deterministically. We have not been able to
+        # root-cause this in MJWarp's internal solver state (qpos/qvel/
+        # control/all reset arrays match a working-reset case bit-for-bit,
+        # yet the next mj_step produces qd of 5000+).
+        #
+        # Workaround: detect this case (high scon AND finite joints) and
+        # schedule a follow-up reset on the next env step. After the wild
+        # post-reset step the system enters NaN, and reset-from-NaN is
+        # known to recover cleanly. Net effect for the user: one R-press
+        # appears instantaneous and collision remains active afterward.
+        #
+        # Conditioned threshold: only fire for scon > ~2000 (mature
+        # contact). Early-contact (scon<1000) and NaN-state resets work
+        # cleanly on their own.
+        from isaaclab_newton.physics import NewtonManager
+
+        pre_scon = 0
+        solver = NewtonManager._solver
+        if solver is not None:
+            for cfg_ in (getattr(solver, "_proxy_collision_configs", None) or {}).values():
+                c = getattr(cfg_, "contacts", None)
+                if c is not None and getattr(c, "soft_contact_count", None) is not None:
+                    pre_scon += int(wp.to_torch(c.soft_contact_count)[0].item())
+        pre_joint_pos = wp.to_torch(self.robot.data.joint_pos)[0]
+        pre_has_nan = bool(torch.isnan(pre_joint_pos).any())
+        if pre_scon > 2000 and not pre_has_nan:
+            self._pending_followup_reset = True
+
         super()._reset_idx(env_ids)
 
         joint_pos = wp.to_torch(self.robot.data.default_joint_pos)[env_ids].clone()
@@ -406,13 +446,12 @@ class PickProxyClothEnv(DirectRLEnv):
         self.cloth.write_nodal_state_to_sim_index(default_state, env_ids=env_ids_list)
         self.cloth.reset(env_ids=env_ids_list)
 
-        # Newton-level state flush. After a numerical explosion the solver's
-        # private buffers (state_1, lagged-impulse arrays, force/acceleration
-        # accumulators) can still hold NaN even after IsaacLab's joint writes
-        # land on state_0 — so they re-poison the next step. Refresh body_q
-        # from the freshly-written joint_q on state_0, zero all
-        # force/acceleration accumulators, mirror state_0 → state_1, and
-        # zero the proxy coupling-force buffers.
+        # ------------------------------------------------------------------
+        # Newton-level state flush. IsaacLab's joint writes above land on the
+        # global state_0 via the sim-bind view, but a numerical explosion can
+        # leave NaN in the coupling / actuator / solver-internal buffers that
+        # are not in State or Control. Each block below clears one such layer.
+        # ------------------------------------------------------------------
         from newton import eval_fk
 
         from isaaclab_newton.physics import NewtonManager
@@ -421,76 +460,88 @@ class PickProxyClothEnv(DirectRLEnv):
         state_0 = NewtonManager._state_0
         state_1 = NewtonManager._state_1
 
-        # Refresh body_q from joint_q on state_0 (joint state was just written
-        # via the sim-bind view; FK has not yet propagated to body transforms).
+        # Propagate joint_q -> body_q on state_0 (the joint writes above only
+        # touched joint_q/qd through the sim-bind view; FK is not invoked).
         if model is not None and state_0 is not None:
             eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
 
-        # Zero force / acceleration / "previous transform" accumulators on
-        # both states. body_q_prev kept in sync with body_q so the
-        # finite-difference velocity in the next step starts at zero.
+        # DIAGNOSTIC: also explicitly zero particle_qd on state_0 to rule out
+        # cloth velocity persisting NaN from the pre-reset explosion.
+        if state_0 is not None and getattr(state_0, "particle_qd", None) is not None:
+            state_0.particle_qd.zero_()
+        if state_1 is not None and getattr(state_1, "particle_qd", None) is not None:
+            state_1.particle_qd.zero_()
+
+        # Zero force / acceleration accumulators on both global states.
+        # state.clear_forces() runs at the end of each substep but only on the
+        # post-swap state_0 — and Newton swaps the _state_0/_state_1
+        # references between substeps, so the buffer that held NaN at
+        # injection time may still be holding it when the next env step
+        # starts. Belt-and-suspenders zeroing here covers that gap.
         for state in (state_0, state_1):
             if state is None:
                 continue
-            if getattr(state, "particle_f", None) is not None:
-                state.particle_f.zero_()
-            if getattr(state, "body_f", None) is not None:
-                state.body_f.zero_()
-            if getattr(state, "body_qdd", None) is not None:
-                state.body_qdd.zero_()
-            if getattr(state, "body_parent_f", None) is not None:
-                state.body_parent_f.zero_()
+            for arr_name in ("body_f", "particle_f", "body_qdd", "body_parent_f"):
+                arr = getattr(state, arr_name, None)
+                if arr is not None:
+                    arr.zero_()
+            # body_q_prev (finite-difference velocity reference) ← clean body_q
             if (
                 getattr(state, "body_q_prev", None) is not None
-                and state_0 is not None
                 and state_0.body_q is not None
             ):
                 wp.copy(state.body_q_prev, state_0.body_q)
 
-        # Mirror state_0 -> state_1 so the double-buffer used by MJWarp
-        # starts from clean data on the next step.
+        # Mirror state_0 -> state_1 — top-level scalar copy of every array.
         if state_0 is not None and state_1 is not None:
             state_1.assign(state_0)
 
-        # Newton Control state — joint_f (torques), joint_target_*, joint_act,
-        # activations. clear() zeros everything; joint_target_pos is then
-        # re-populated below by the IsaacLab PD-target write path before the
-        # next step runs.
-        control = NewtonManager._control
-        if control is not None:
-            control.clear()
+        # Control: joint_f (last actuator torques — often NaN after an
+        # explosion), joint_target_pos/vel, joint_act, tri/tet/muscle
+        # activations. joint_target_pos is re-populated by the articulation's
+        # write_data_to_sim() at the start of the next step from the value
+        # we wrote above via set_joint_position_target_index().
+        if NewtonManager._control is not None:
+            NewtonManager._control.clear()
 
-        # Actuator adapter's internal per-actuator State (PD/PID integrator
-        # state, double-buffered as _states_a / _states_b). The adapter
-        # exposes a public reset(env_ids) for exactly this case.
-        if NewtonManager._adapter is not None:
-            try:
-                NewtonManager._adapter.reset(env_ids=env_ids)
-            except Exception as exc:
-                logger.warning("[PickProxyClothEnv] adapter.reset failed: %s", exc)
+        # Actuator adapter is reset automatically by the IsaacLab base
+        # Articulation.reset() chain (which calls SimulationManager._adapter
+        # .reset(env_ids) on the global adapter). No explicit call needed
+        # here.
 
-        # Zero proxy lagged-impulse buffers carried across step boundaries,
-        # plus per-entry state buffers (each sub-solver keeps its own state_0,
-        # state_1, state_tmp, and force_input aggregator arrays).
+        # Coupling layer (SolverCoupledProxy): lagged-impulse buffers and the
+        # collision-detection cache.
         solver = NewtonManager._solver
         if solver is not None:
+            # proxy.coupling_forces carries cloth->rigid feedback impulse from
+            # step N to step N+1. proxy.proxy_qd_before is the pre-step proxy
+            # velocity the harvest uses to derive the next lagged impulse.
             for attr in ("_proxy_mappings", "_proxy_particle_mappings"):
-                mappings = getattr(solver, attr, None)
-                if not mappings:
-                    continue
-                for mapping in mappings:
-                    cf = getattr(mapping, "coupling_forces", None)
-                    if cf is not None:
-                        cf.zero_()
-                    # proxy_qd_before holds the proxy velocity captured before
-                    # the dst step; the harvest reads it to compute lagged
-                    # feedback. If NaN, next harvest produces NaN feedback.
-                    qd_before = getattr(mapping, "proxy_qd_before", None)
-                    if qd_before is not None:
-                        qd_before.zero_()
+                for mapping in getattr(solver, attr, None) or ():
+                    for arr_name in ("coupling_forces", "proxy_qd_before"):
+                        arr = getattr(mapping, arr_name, None)
+                        if arr is not None:
+                            arr.zero_()
 
-            entries = getattr(solver, "_entries", None) or {}
-            for entry in entries.values():
+            # config.collide_counter gates pipeline.collide(); without
+            # resetting to 0, the next step reuses cached (possibly stale,
+            # NaN-position-derived) contacts until the next interval boundary
+            # — and cloth↔robot contact silently breaks after a reset.
+            for config in (getattr(solver, "_proxy_collision_configs", None) or {}).values():
+                if hasattr(config, "collide_counter"):
+                    config.collide_counter = 0
+                contacts = getattr(config, "contacts", None)
+                if contacts is not None and hasattr(contacts, "clear"):
+                    contacts.clear(bump_generation=True)
+
+            # Per-entry state buffers and aggregator buffers. The sub-solver
+            # owns these and uses them as inputs / scratch each step:
+            # body_force_input/particle_force_input accumulate
+            # state_in.body_f + lagged proxy impulses (cleared per pass, but
+            # only after we read them, so reset here to be safe), and the
+            # entry's own State double-buffers hold proxy body positions /
+            # cloth particle positions that the collision pipeline reads.
+            for entry in (getattr(solver, "_entries", None) or {}).values():
                 for entry_state in (
                     getattr(entry, "state_0", None),
                     getattr(entry, "state_1", None),
@@ -499,15 +550,75 @@ class PickProxyClothEnv(DirectRLEnv):
                 ):
                     if entry_state is None:
                         continue
-                    if getattr(entry_state, "particle_f", None) is not None:
-                        entry_state.particle_f.zero_()
-                    if getattr(entry_state, "body_f", None) is not None:
-                        entry_state.body_f.zero_()
-                    if getattr(entry_state, "body_qdd", None) is not None:
-                        entry_state.body_qdd.zero_()
-                    if getattr(entry_state, "body_parent_f", None) is not None:
-                        entry_state.body_parent_f.zero_()
+                    for arr_name in (
+                        "body_f",
+                        "particle_f",
+                        "body_qdd",
+                        "body_parent_f",
+                    ):
+                        arr = getattr(entry_state, arr_name, None)
+                        if arr is not None:
+                            arr.zero_()
                 for buf_name in ("body_force_input", "particle_force_input"):
                     buf = getattr(entry, buf_name, None)
                     if buf is not None:
                         buf.zero_()
+
+            # Rebuild VBD's particle BVH from the (just-reset) particle
+            # positions. Without this, the BVH still indexes the pre-reset
+            # deformed cloth geometry, so subsequent collide() calls find
+            # contacts at stale locations — apply impulses at wrong points →
+            # instability → NaN. This is the difference between the first
+            # reset (cloth was at default pre-reset → BVH already aligned)
+            # and subsequent resets (cloth was deformed → BVH stale).
+            for entry in (getattr(solver, "_entries", None) or {}).values():
+                sub = getattr(entry, "solver", None)
+                if sub is not None and hasattr(sub, "rebuild_bvh"):
+                    try:
+                        sub.rebuild_bvh(getattr(entry, "state_0", None))
+                    except Exception as exc:
+                        logger.warning("[PickProxyClothEnv] rebuild_bvh failed: %s", exc)
+
+            # MJWarp solver-internal Data buffers (qacc, qacc_warmstart,
+            # qfrc_*, ctrl, act, cvel, cacc, cfrc_*, contacts, factorization
+            # caches). mujoco_warp.reset_data() is the canonical API: it
+            # clears every internal field and sets defaults, with a per-world
+            # mask for selective reset.
+            try:
+                import mujoco_warp as _mjw
+
+                for entry in (getattr(solver, "_entries", None) or {}).values():
+                    sub = getattr(entry, "solver", None)
+                    mjw_model = getattr(sub, "mjw_model", None) if sub is not None else None
+                    mjw_data = getattr(sub, "mjw_data", None) if sub is not None else None
+                    if mjw_model is None or mjw_data is None:
+                        continue
+                    nworld = int(getattr(mjw_data, "nworld", 1))
+                    reset_mask = wp.zeros(nworld, dtype=wp.bool, device=self.device)
+                    mask_t = wp.to_torch(reset_mask)
+                    env_ids_t = (
+                        env_ids
+                        if isinstance(env_ids, torch.Tensor)
+                        else torch.tensor(list(env_ids), dtype=torch.long, device=self.device)
+                    )
+                    mask_t[env_ids_t.to(self.device)] = True
+                    _mjw.reset_data(mjw_model, mjw_data, reset_mask)
+                    # Recompute qpos0-dependent constants (dof_invweight0,
+                    # actuator_acc0, actuator_biasprm dampratio, etc.). These
+                    # are baked at init from qpos0 and may not be touched by
+                    # reset_data; if the running simulation drifted any of
+                    # the inputs they're derived from, the actuator force
+                    # response after a from-contact reset is wrong.
+                    if hasattr(_mjw, "set_const_0"):
+                        _mjw.set_const_0(mjw_model, mjw_data)
+            except Exception as exc:
+                logger.warning("[PickProxyClothEnv] mujoco_warp.reset_data failed: %s", exc)
+
+        # Force all queued Warp + torch CUDA kernels (state writes, zero_(),
+        # assign, mujoco_warp.reset_data, etc.) to complete before the next
+        # sim step reads from these buffers. Without this, post-reset
+        # behaviour is non-deterministic: sometimes clean, sometimes instant
+        # explosion. Use full-device sync (not just current-stream) to catch
+        # cross-stream kernels.
+        wp.synchronize_device()
+        torch.cuda.synchronize()

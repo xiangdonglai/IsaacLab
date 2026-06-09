@@ -29,7 +29,7 @@ from isaaclab_newton.physics import (
 from isaaclab_newton.physics.newton_manager import NewtonManager
 from newton import CollisionPipeline, Model, ShapeFlags
 from newton.solvers import SolverBase, SolverFeatherstone, SolverKamino, SolverMuJoCo, SolverVBD, SolverXPBD
-from newton.solvers.experimental.coupled import SolverCoupled, SolverCoupledAdmm, SolverCoupledProxy
+from newton.solvers.experimental.coupled import SolverCoupled, SolverCoupledADMM as SolverCoupledAdmm, SolverCoupledProxy
 
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.physics import PhysicsManager

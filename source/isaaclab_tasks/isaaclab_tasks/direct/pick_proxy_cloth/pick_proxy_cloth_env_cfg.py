@@ -37,6 +37,15 @@ from isaaclab_assets.robots.franka import FRANKA_PANDA_CFG, FRANKA_PANDA_HIGH_PD
 # or newton before isaacsim's SimulationApp starts.
 _SHIRT_USD_PLACEHOLDER = "__SHIRT_USD_PLACEHOLDER__"
 
+FRANKA_PANDA_PROXY_CFG = FRANKA_PANDA_HIGH_PD_CFG.copy()
+FRANKA_PANDA_PROXY_CFG.actuators["panda_shoulder"].stiffness = 4000.0
+FRANKA_PANDA_PROXY_CFG.actuators["panda_shoulder"].damping = 400.0
+FRANKA_PANDA_PROXY_CFG.actuators["panda_forearm"].stiffness = 4000.0
+FRANKA_PANDA_PROXY_CFG.actuators["panda_forearm"].damping = 400.0
+FRANKA_PANDA_PROXY_CFG.actuators["panda_hand"].stiffness = 4000.0
+FRANKA_PANDA_PROXY_CFG.actuators["panda_hand"].damping = 400.0
+FRANKA_PANDA_PROXY_CFG.spawn.rigid_props.disable_gravity = True
+
 
 # Match franka_soft_env_cfg's MODEL_CFG values. The AVBD task used kd=1.0,
 # mu=1.5 — those work for AVBD's unified contact handling but destabilize
@@ -122,8 +131,8 @@ class PickProxyClothEnvCfg(DirectRLEnvCfg):
     # robot — base Franka cfg; actuator overrides applied in __post_init__
     # exactly like franka_soft_env_cfg's _FrankaSoftSceneCfg.
     robot_cfg = preset(
-        default=FRANKA_PANDA_HIGH_PD_CFG.replace(prim_path="/World/envs/env_.*/Robot"),
-        franka=FRANKA_PANDA_HIGH_PD_CFG.replace(prim_path="/World/envs/env_.*/Robot"),
+        default=FRANKA_PANDA_PROXY_CFG.replace(prim_path="/World/envs/env_.*/Robot"),
+        franka=FRANKA_PANDA_PROXY_CFG.replace(prim_path="/World/envs/env_.*/Robot"),
     )
 
     # joint names to control (7 arm joints, excluding fingers)
@@ -156,7 +165,7 @@ class PickProxyClothEnvCfg(DirectRLEnvCfg):
             ),
         ),
         init_state=DeformableObjectCfg.InitialStateCfg(
-            pos=(0.45, 1.20, 0.10),
+            pos=(0.35, 1.20, 0.10),
             rot=(1.0, 0.0, 0.0, 0.0),
         ),
     )
