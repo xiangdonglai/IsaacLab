@@ -40,10 +40,13 @@ _SHIRT_USD_PLACEHOLDER = "__SHIRT_USD_PLACEHOLDER__"
 FRANKA_PANDA_PROXY_CFG = FRANKA_PANDA_HIGH_PD_CFG.copy()
 FRANKA_PANDA_PROXY_CFG.actuators["panda_shoulder"].stiffness = 4000.0
 FRANKA_PANDA_PROXY_CFG.actuators["panda_shoulder"].damping = 400.0
+FRANKA_PANDA_PROXY_CFG.actuators["panda_shoulder"].effort_limit_sim = 1000.0
 FRANKA_PANDA_PROXY_CFG.actuators["panda_forearm"].stiffness = 4000.0
 FRANKA_PANDA_PROXY_CFG.actuators["panda_forearm"].damping = 400.0
+FRANKA_PANDA_PROXY_CFG.actuators["panda_forearm"].effort_limit_sim = 1000.0
 FRANKA_PANDA_PROXY_CFG.actuators["panda_hand"].stiffness = 4000.0
 FRANKA_PANDA_PROXY_CFG.actuators["panda_hand"].damping = 400.0
+FRANKA_PANDA_PROXY_CFG.actuators["panda_hand"].effort_limit_sim = 1000.0
 FRANKA_PANDA_PROXY_CFG.spawn.rigid_props.disable_gravity = True
 
 
@@ -52,8 +55,8 @@ FRANKA_PANDA_PROXY_CFG.spawn.rigid_props.disable_gravity = True
 # MJWarp's rigid-rigid contact damping (kd=1.0 is 100,000× franka_soft's 1e-5).
 MODEL_CFG = NewtonModelCfg(
     soft_contact_ke=1e4,
-    soft_contact_kd=1e-5,
-    soft_contact_mu=5.0,
+    soft_contact_kd=1e-2,
+    soft_contact_mu=1.5,
     shape_material_ke=4e4,
     shape_material_kd=1e-5,
     shape_material_mu=5.0,
@@ -73,7 +76,7 @@ class PickProxyClothPhysicsCfg(PresetCfg):
                 integrator="implicitfast",
             ),
             dst_solver_cfg=VBDSolverCfg(
-                iterations=10,
+                iterations=20,
                 particle_enable_self_contact=True,
                 particle_self_contact_radius=2e-3,
                 particle_self_contact_margin=2e-3,
@@ -88,7 +91,8 @@ class PickProxyClothPhysicsCfg(PresetCfg):
                 "/World/envs/env_.*/Robot/panda_hand",
                 "/World/envs/env_.*/Robot/panda_(left|right)finger",
             ],
-            proxy_collide_interval=5,
+            proxy_collide_interval=1,
+            proxy_mass_scale=5,
         ),
         collision_cfg=NewtonCollisionPipelineCfg(
             soft_contact_margin=0.01,
@@ -194,6 +198,6 @@ class PickProxyClothEnvCfg(DirectRLEnvCfg):
         # against gravity through joint_target_pos.
         robot = self.robot_cfg.default if hasattr(self.robot_cfg, "default") else self.robot_cfg
         robot.spawn.rigid_props.disable_gravity = False
-        robot.actuators["panda_hand"].effort_limit_sim = 500.0
-        robot.actuators["panda_hand"].stiffness = 1.0e4
-        robot.actuators["panda_hand"].damping = 100.0
+        robot.actuators["panda_hand"].effort_limit_sim = 1000.0
+        robot.actuators["panda_hand"].stiffness = 4.0e4
+        robot.actuators["panda_hand"].damping = 400.0
