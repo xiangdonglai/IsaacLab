@@ -150,6 +150,20 @@ class NewtonCollisionPipelineCfg:
     Defaults to ``0.01`` (same as Newton's default).
     """
 
+    enable_water_tight_rigid_soft_contact: bool = False
+    """Whether to generate water-tight rigid-soft (particle/cloth) contacts.
+
+    When ``True``, the collision pipeline runs an additional triangle-driven kernel on
+    top of the per-particle SDF queries, producing the edge-edge and triangle-vertex
+    contacts that point queries miss (so a thin cloth cannot tunnel between a rigid
+    body's surface samples). The extra contacts land in the E/F range of
+    ``Contacts.soft_contact_*``; the per-particle range is unchanged. Passed to
+    ``CollisionPipeline.collide(enable_water_tight_rigid_soft_contact=...)`` each step,
+    not to the pipeline constructor.
+
+    Defaults to ``False``.
+    """
+
     requires_grad: bool | None = None
     """Whether to enable gradient computation for collision.
 
@@ -180,6 +194,8 @@ class NewtonCollisionPipelineCfg:
         from newton.geometry import HydroelasticSDF
 
         cfg_dict = self.to_dict()
+        # Not a CollisionPipeline constructor arg; it is passed to collide() per step.
+        cfg_dict.pop("enable_water_tight_rigid_soft_contact", None)
         hydro_cfg = cfg_dict.pop("sdf_hydroelastic_config", None)
         if hydro_cfg is not None:
             cfg_dict["sdf_hydroelastic_config"] = HydroelasticSDF.Config(**hydro_cfg)

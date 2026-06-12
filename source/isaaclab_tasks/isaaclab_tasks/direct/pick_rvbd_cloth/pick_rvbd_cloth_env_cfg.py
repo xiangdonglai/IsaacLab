@@ -77,6 +77,10 @@ class PickRVBDClothPhysicsCfg(PresetCfg):
             particle_rest_shape_contact_exclusion_radius=0.0,
             particle_vertex_contact_buffer_size=16,
             particle_edge_contact_buffer_size=20,
+            # Per-body particle-contact list capacity. Default 256 overflows during the
+            # cloth grasp (peaks ~262-295 contacts on a finger); raise to avoid dropping
+            # finger-cloth contacts. Pre-allocated at construction (not resized at runtime).
+            rigid_body_particle_contact_buffer_size=512,
             particle_collision_detection_interval=-1,
             rigid_contact_k_start=1.0e2,
             rigid_avbd_beta=1.0e5,
@@ -94,6 +98,8 @@ class PickRVBDClothPhysicsCfg(PresetCfg):
         ),
         collision_cfg=NewtonCollisionPipelineCfg(
             soft_contact_margin=0.01,
+            # enable_water_tight_rigid_soft_contact is driven by
+            # PickRVBDClothEnvCfg.enable_water_tight_collision (propagated in the env __init__).
         ),
         model_cfg=MODEL_CFG,
         num_substeps=10,
@@ -176,6 +182,14 @@ class PickRVBDClothEnvCfg(DirectRLEnvCfg):
 
     # interactive IK: when True, spawn a draggable sphere and solve IK each step
     interactive_ik: bool = False
+
+    # water-tight rigid-soft (cloth-finger) collision
+    enable_water_tight_collision: bool = True
+    """When True, generate water-tight rigid-soft contacts so thin cloth cannot tunnel
+    between the gripper fingers' SDF surface samples. Propagated to the Newton collision
+    pipeline (:attr:`NewtonCollisionPipelineCfg.enable_water_tight_rigid_soft_contact`)
+    in the env ``__init__``. Hydra-overridable, e.g. ``enable_water_tight_collision=false``.
+    Defaults to ``True``."""
 
     # reward scales
     rew_scale_cloth_height = 5.0

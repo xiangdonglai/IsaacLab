@@ -1138,7 +1138,10 @@ class NewtonManager(PhysicsManager):
             cls._solver.rebuild_bvh(cls._state_0)
 
         if cls._needs_collision_pipeline:
-            cls._collision_pipeline.collide(cls._state_0, cls._contacts)
+            _water_tight = bool(getattr(cls._collision_cfg, "enable_water_tight_rigid_soft_contact", False))
+            cls._collision_pipeline.collide(
+                cls._state_0, cls._contacts, enable_water_tight_rigid_soft_contact=_water_tight
+            )
             contacts = cls._contacts
         else:
             contacts = None

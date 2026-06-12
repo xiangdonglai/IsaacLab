@@ -44,6 +44,16 @@ class PickAVBDClothEnv(DirectRLEnv):
                 actuator.stiffness = 0.0
                 actuator.damping = 200.0
 
+        # Propagate the water-tight collision flag down to the Newton collision pipeline
+        # cfg before the sim (and collision pipeline) are built in super().__init__().
+        # cfg.sim.physics is the resolved NewtonCfg (post preset-resolution); fall back to
+        # the unresolved PresetCfg's default/newton entries if needed.
+        _physics = cfg.sim.physics
+        _targets = [p for p in (_physics, getattr(_physics, "default", None), getattr(_physics, "newton", None))
+                    if p is not None and getattr(p, "collision_cfg", None) is not None]
+        for _t in _targets:
+            _t.collision_cfg.enable_water_tight_rigid_soft_contact = cfg.enable_water_tight_collision
+
         super().__init__(cfg, render_mode, **kwargs)
 
         self._arm_joint_idx, _ = self.robot.find_joints(self.cfg.arm_joint_names)
@@ -126,7 +136,7 @@ class PickAVBDClothEnv(DirectRLEnv):
             self._joint_limit_obj = ik.IKObjectiveJointLimit(
                 joint_limit_lower=newton_model.joint_limit_lower,
                 joint_limit_upper=newton_model.joint_limit_upper,
-                weight=0.0,
+                weight=0.01,
             )
 
             self._ik_joint_q = wp.array(newton_model.joint_q, shape=(1, newton_model.joint_coord_count))
