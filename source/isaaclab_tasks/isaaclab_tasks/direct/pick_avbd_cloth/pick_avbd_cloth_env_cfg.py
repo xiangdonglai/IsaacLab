@@ -33,14 +33,20 @@ _SHIRT_USD = os.path.join(
     "unisex_shirt.usd",
 )
 
-# AVBD-specific Franka config: high stiffness for ALM joints
+# AVBD-specific Franka config: high stiffness for ALM joints.
+# NOTE: damping must be near-critical (~2*sqrt(stiffness*inertia)) for the pure-penalty
+# AVBD articulation solver. The previous damping of 0.01 against stiffness 1e6 was ~5
+# orders of magnitude below critical, so the explicitly-integrated actuator force diverged
+# and the arm exploded (max joint speed ~2800 rad/s holding its own default config). The
+# RVBD task hid this because reduced-coordinate projection re-solves the articulation each
+# step; the AVBD penalty solver has no such safety net.
 FRANKA_PANDA_AVBD_CFG = FRANKA_PANDA_HIGH_PD_CFG.copy()
 FRANKA_PANDA_AVBD_CFG.actuators["panda_shoulder"].stiffness = 1e6
-FRANKA_PANDA_AVBD_CFG.actuators["panda_shoulder"].damping = 0.01
+FRANKA_PANDA_AVBD_CFG.actuators["panda_shoulder"].damping = 2.0e3
 FRANKA_PANDA_AVBD_CFG.actuators["panda_forearm"].stiffness = 1e6
-FRANKA_PANDA_AVBD_CFG.actuators["panda_forearm"].damping = 0.01
+FRANKA_PANDA_AVBD_CFG.actuators["panda_forearm"].damping = 2.0e3
 FRANKA_PANDA_AVBD_CFG.actuators["panda_hand"].stiffness = 1e6
-FRANKA_PANDA_AVBD_CFG.actuators["panda_hand"].damping = 0.1
+FRANKA_PANDA_AVBD_CFG.actuators["panda_hand"].damping = 2.0e3
 FRANKA_PANDA_AVBD_CFG.spawn.rigid_props.disable_gravity = False
 
 

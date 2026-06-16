@@ -136,7 +136,7 @@ class PickAVBDClothEnv(DirectRLEnv):
             self._joint_limit_obj = ik.IKObjectiveJointLimit(
                 joint_limit_lower=newton_model.joint_limit_lower,
                 joint_limit_upper=newton_model.joint_limit_upper,
-                weight=0.01,
+                weight=0.0,
             )
 
             self._ik_joint_q = wp.array(newton_model.joint_q, shape=(1, newton_model.joint_coord_count))
